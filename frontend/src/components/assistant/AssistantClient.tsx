@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useSpeechToText, useTTS } from "@/hooks/useVoice";
+import { useLocalTasks } from "@/hooks/useLocalTasks";
 
 interface Message {
   id: string;
@@ -22,12 +23,12 @@ interface HistoryEntry {
 }
 
 const SUGGESTIONS = [
-  "What can you help me with?",
+  "What are my most urgent tasks?",
+  "Add a task: review Q2 metrics by Friday",
   "What's today's date and time?",
   "Help me plan my week",
-  "Write a concise executive summary template",
-  "Explain quantum computing simply",
-  "Draft a professional email for a follow-up",
+  "Draft a professional follow-up email",
+  "Explain something complex simply",
 ];
 
 export function AssistantClient({ userName }: { userName?: string }) {
@@ -40,11 +41,11 @@ export function AssistantClient({ userName }: { userName?: string }) {
   const historyRef = useRef<HistoryEntry[]>([]);
   const memoryRef = useRef<Record<string, string>>({});
   const abortRef = useRef<AbortController | null>(null);
+  const { allTasks, create: createTask } = useLocalTasks();
 
   const tts = useTTS();
   const stt = useSpeechToText((transcript) => {
     setInput(transcript);
-    // auto-focus textarea after transcript lands
     textareaRef.current?.focus();
   });
 
@@ -81,6 +82,7 @@ export function AssistantClient({ userName }: { userName?: string }) {
           history: historyRef.current,
           memory: memoryRef.current,
           userName: userName ?? session?.user?.name?.split(" ")[0],
+          tasks: allTasks,
         }),
         signal: abortRef.current.signal,
       });
@@ -127,6 +129,26 @@ export function AssistantClient({ userName }: { userName?: string }) {
                   { role: "user", content: msg },
                   { role: "assistant", content: fullText },
                 ];
+                // Handle side effects (task/note creation)
+                if (parsed.sideEffects) {
+                  for (const fx of parsed.sideEffects) {
+                    if (fx.type === "task_create" && fx.data?.title) {
+                      createTask({
+                        title: fx.data.title,
+                        priority: fx.data.priority ?? "medium",
+                        status: "todo",
+                        assignee: fx.data.assignee,
+                        due_date: fx.data.due_date,
+                        description: fx.data.description,
+                      });
+                    }
+                    if (fx.type === "note_create" && fx.data?.title) {
+                      const notes = JSON.parse(localStorage.getItem("jarvis_notes_v1") ?? "[]");
+                      notes.unshift({ id: crypto.randomUUID(), title: fx.data.title, content: fx.data.content, created_at: new Date().toISOString() });
+                      localStorage.setItem("jarvis_notes_v1", JSON.stringify(notes));
+                    }
+                  }
+                }
                 tts.speak(fullText);
               }
             } catch { /* non-JSON */ }
