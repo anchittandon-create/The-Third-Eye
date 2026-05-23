@@ -2,12 +2,13 @@
 
 import { useState, useRef, useEffect, useCallback, KeyboardEvent } from "react";
 import { useSession } from "next-auth/react";
-import { Send, Cpu, Zap, RotateCcw, Mic, MicOff, Volume2, VolumeX } from "lucide-react";
+import { Send, Cpu, Zap, RotateCcw, Mic, MicOff, Volume2, VolumeX, Globe } from "lucide-react";
 import { cn } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useSpeechToText, useTTS } from "@/hooks/useVoice";
+import { useContinuousSTT, useTTS } from "@/hooks/useVoice";
 import { useLocalTasks } from "@/hooks/useLocalTasks";
+import { useLocalKnowledge } from "@/hooks/useLocalKnowledge";
 
 interface Message {
   id: string;
@@ -27,8 +28,22 @@ const SUGGESTIONS = [
   "Add a task: review Q2 metrics by Friday",
   "What's today's date and time?",
   "Help me plan my week",
+  "Summarise my knowledge base",
   "Draft a professional follow-up email",
-  "Explain something complex simply",
+];
+
+const LANGUAGES = [
+  { code: "", label: "Auto" },
+  { code: "en-US", label: "English (US)" },
+  { code: "en-GB", label: "English (UK)" },
+  { code: "hi-IN", label: "हिन्दी" },
+  { code: "es-ES", label: "Español" },
+  { code: "fr-FR", label: "Français" },
+  { code: "de-DE", label: "Deutsch" },
+  { code: "pt-BR", label: "Português" },
+  { code: "ja-JP", label: "日本語" },
+  { code: "zh-CN", label: "中文" },
+  { code: "ar-SA", label: "العربية" },
 ];
 
 export function AssistantClient({ userName }: { userName?: string }) {
@@ -36,37 +51,57 @@ export function AssistantClient({ userName }: { userName?: string }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
+  const [lang, setLang] = useState("");
+  const [showLang, setShowLang] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const historyRef = useRef<HistoryEntry[]>([]);
   const memoryRef = useRef<Record<string, string>>({});
   const abortRef = useRef<AbortController | null>(null);
-  const { allTasks, create: createTask } = useLocalTasks();
+  const isStreamingRef = useRef(false);
 
+  const { allTasks, create: createTask } = useLocalTasks();
+  const { docs } = useLocalKnowledge();
   const tts = useTTS();
-  const stt = useSpeechToText((transcript) => {
-    setInput(transcript);
-    textareaRef.current?.focus();
+
+  // Use a ref so the STT callback always sees the latest sendMessage
+  const sendMessageRef = useRef<(text?: string) => Promise<void>>(async () => {});
+
+  // Auto-send when voice captures a final transcript
+  const handleVoiceFinal = useCallback((text: string) => {
+    if (isStreamingRef.current) return;
+    sendMessageRef.current(text);
+  }, []);
+
+  const stt = useContinuousSTT({
+    onFinal: handleVoiceFinal,
+    onInterim: () => {}, // just triggers re-render via interimText
+    lang: lang || undefined,
   });
+
+  // Keep isStreamingRef in sync
+  useEffect(() => { isStreamingRef.current = isStreaming; }, [isStreaming]);
+
+  // Pause mic while JARVIS is speaking (prevents feedback loop)
+  useEffect(() => {
+    if (tts.speaking && stt.listening) stt.pause();
+    else if (!tts.speaking && stt.listening) stt.resume();
+  }, [tts.speaking]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const handleSend = useCallback(async (text?: string) => {
+  const sendMessage = useCallback(async (text?: string) => {
     const msg = (text ?? input).trim();
-    if (!msg || isStreaming) return;
+    if (!msg || isStreamingRef.current) return;
 
     setInput("");
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-    }
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
 
     const userMsg: Message = { id: crypto.randomUUID(), role: "user", content: msg };
-    setMessages((prev) => [...prev, userMsg]);
-
     const assistantId = crypto.randomUUID();
-    setMessages((prev) => [...prev, {
+    setMessages((prev) => [...prev, userMsg, {
       id: assistantId, role: "assistant", content: "", streaming: true, toolsUsed: [],
     }]);
     setIsStreaming(true);
@@ -74,6 +109,10 @@ export function AssistantClient({ userName }: { userName?: string }) {
     abortRef.current = new AbortController();
 
     try {
+      const readyDocs = docs
+        .filter((d) => d.processing_status === "ready")
+        .map((d) => ({ id: d.id, title: d.title, content: d.content, chunk_count: d.chunk_count }));
+
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -83,6 +122,7 @@ export function AssistantClient({ userName }: { userName?: string }) {
           memory: memoryRef.current,
           userName: userName ?? session?.user?.name?.split(" ")[0],
           tasks: allTasks,
+          docs: readyDocs,
         }),
         signal: abortRef.current.signal,
       });
@@ -105,10 +145,7 @@ export function AssistantClient({ userName }: { userName?: string }) {
         buffer = lines.pop() ?? "";
 
         for (const line of lines) {
-          if (line.startsWith("event: ")) {
-            eventType = line.slice(7).trim();
-            continue;
-          }
+          if (line.startsWith("event: ")) { eventType = line.slice(7).trim(); continue; }
           if (line.startsWith("data: ")) {
             try {
               const parsed = JSON.parse(line.slice(6));
@@ -129,7 +166,6 @@ export function AssistantClient({ userName }: { userName?: string }) {
                   { role: "user", content: msg },
                   { role: "assistant", content: fullText },
                 ];
-                // Handle side effects (task/note creation)
                 if (parsed.sideEffects) {
                   for (const fx of parsed.sideEffects) {
                     if (fx.type === "task_create" && fx.data?.title) {
@@ -144,11 +180,12 @@ export function AssistantClient({ userName }: { userName?: string }) {
                     }
                     if (fx.type === "note_create" && fx.data?.title) {
                       const notes = JSON.parse(localStorage.getItem("jarvis_notes_v1") ?? "[]");
-                      notes.unshift({ id: crypto.randomUUID(), title: fx.data.title, content: fx.data.content, created_at: new Date().toISOString() });
+                      notes.unshift({ id: crypto.randomUUID(), title: fx.data.title, content: fx.data.content, pinned: false, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
                       localStorage.setItem("jarvis_notes_v1", JSON.stringify(notes));
                     }
                   }
                 }
+                // Speak response — mic will auto-pause via the tts.speaking effect
                 tts.speak(fullText);
               }
             } catch { /* non-JSON */ }
@@ -169,20 +206,28 @@ export function AssistantClient({ userName }: { userName?: string }) {
       ));
     } finally {
       setIsStreaming(false);
-      abortRef.current = null;
     }
-  }, [input, isStreaming, session, userName]);
+  }, [input, session, userName, allTasks, docs, createTask, tts]);
+
+  // Keep ref up-to-date so voice callback always calls latest version
+  useEffect(() => { sendMessageRef.current = sendMessage; }, [sendMessage]);
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   }
 
   function handleClear() {
-    if (isStreaming) { abortRef.current?.abort(); }
+    if (isStreaming) abortRef.current?.abort();
+    tts.stop();
     setMessages([]);
     historyRef.current = [];
     memoryRef.current = {};
     setIsStreaming(false);
+  }
+
+  function toggleMic() {
+    if (stt.listening) stt.stop();
+    else stt.start();
   }
 
   return (
@@ -190,7 +235,7 @@ export function AssistantClient({ userName }: { userName?: string }) {
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 sm:px-8 py-6 space-y-5">
         {messages.length === 0 ? (
-          <EmptyState userName={userName} onSuggest={handleSend} />
+          <EmptyState userName={userName} onSuggest={sendMessage} />
         ) : (
           messages.map((msg) => (
             <MessageBubble key={msg.id} message={msg} session={session} />
@@ -198,6 +243,36 @@ export function AssistantClient({ userName }: { userName?: string }) {
         )}
         <div ref={bottomRef} />
       </div>
+
+      {/* Live transcription banner */}
+      {stt.listening && (
+        <div className="flex-none px-4 sm:px-8">
+          <div className={cn(
+            "flex items-center gap-3 px-4 py-2.5 rounded-card border mb-2 transition-all",
+            stt.interimText
+              ? "bg-accent-blue/5 border-accent-blue/30"
+              : "bg-background-surface border-border-default"
+          )}>
+            <div className="flex gap-0.5 flex-none">
+              {[0, 1, 2, 3].map((i) => (
+                <span
+                  key={i}
+                  className="w-0.5 rounded-full bg-accent-blue animate-bounce"
+                  style={{ height: stt.interimText ? `${8 + (i % 3) * 4}px` : "8px", animationDelay: `${i * 80}ms` }}
+                />
+              ))}
+            </div>
+            <span className="text-sm flex-1 min-w-0">
+              {stt.interimText
+                ? <span className="text-text-primary italic">{stt.interimText}</span>
+                : <span className="text-text-muted">Listening{tts.speaking ? " (muted while JARVIS speaks)" : "…"}</span>}
+            </span>
+            {tts.speaking && (
+              <span className="text-[10px] font-mono text-accent-violet flex-none">JARVIS speaking</span>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Input */}
       <div className="flex-none px-4 sm:px-8 py-4 border-t border-border-default bg-background-base">
@@ -207,7 +282,7 @@ export function AssistantClient({ userName }: { userName?: string }) {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Message JARVIS…"
+            placeholder={stt.listening ? "Speak or type…" : "Message JARVIS…"}
             rows={1}
             disabled={isStreaming}
             className="flex-1 bg-transparent text-text-primary placeholder:text-text-muted text-sm resize-none outline-none max-h-32 leading-relaxed disabled:opacity-60"
@@ -218,15 +293,50 @@ export function AssistantClient({ userName }: { userName?: string }) {
               t.style.height = `${Math.min(t.scrollHeight, 128)}px`;
             }}
           />
+
+          {/* Language selector */}
+          {stt.supported && (
+            <div className="relative flex-none">
+              <button
+                onClick={() => setShowLang((v) => !v)}
+                title="Voice language"
+                className={cn(
+                  "p-1.5 rounded-input transition-colors",
+                  showLang ? "text-accent-blue" : "text-text-muted hover:text-text-secondary"
+                )}
+              >
+                <Globe size={13} />
+              </button>
+              {showLang && (
+                <div className="absolute bottom-9 right-0 bg-background-elevated border border-border-default rounded-card shadow-lg z-50 min-w-[160px] py-1">
+                  {LANGUAGES.map((l) => (
+                    <button
+                      key={l.code}
+                      onClick={() => { setLang(l.code); setShowLang(false); }}
+                      className={cn(
+                        "w-full text-left px-3 py-1.5 text-xs transition-colors",
+                        lang === l.code
+                          ? "text-accent-blue bg-accent-blue/10"
+                          : "text-text-secondary hover:text-text-primary hover:bg-background-surface"
+                      )}
+                    >
+                      {l.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Mic button */}
           {stt.supported && (
             <button
-              onClick={stt.listening ? stt.stop : stt.start}
-              title={stt.listening ? "Stop listening" : "Voice input"}
+              onClick={toggleMic}
+              title={stt.listening ? "Stop listening" : "Start continuous listening"}
               className={cn(
-                "flex-none p-1.5 rounded-input transition-colors",
+                "flex-none p-1.5 rounded-input transition-all",
                 stt.listening
-                  ? "text-accent-red bg-accent-red/10 animate-pulse"
+                  ? "text-accent-red bg-accent-red/10 ring-1 ring-accent-red/30 animate-pulse"
                   : "text-text-muted hover:text-accent-blue"
               )}
             >
@@ -242,7 +352,9 @@ export function AssistantClient({ userName }: { userName?: string }) {
               className={cn(
                 "flex-none p-1.5 rounded-input transition-colors",
                 tts.enabled
-                  ? "text-accent-violet hover:text-accent-violet/70"
+                  ? tts.speaking
+                    ? "text-accent-violet animate-pulse"
+                    : "text-accent-violet hover:text-accent-violet/70"
                   : "text-text-muted hover:text-text-secondary"
               )}
             >
@@ -259,8 +371,9 @@ export function AssistantClient({ userName }: { userName?: string }) {
               <RotateCcw size={13} />
             </button>
           )}
+
           <button
-            onClick={() => handleSend()}
+            onClick={() => sendMessage()}
             disabled={!input.trim() || isStreaming}
             className={cn(
               "flex-none p-1.5 rounded-input transition-colors",
@@ -274,7 +387,9 @@ export function AssistantClient({ userName }: { userName?: string }) {
           </button>
         </div>
         <p className="text-text-muted text-[11px] mt-2 text-center">
-          Enter to send · Shift+Enter for new line
+          {stt.listening
+            ? `Listening · ${LANGUAGES.find((l) => l.code === lang)?.label ?? "Auto"} · speak to send automatically`
+            : "Enter to send · Shift+Enter for new line · mic for voice"}
         </p>
       </div>
     </div>
@@ -326,7 +441,6 @@ function MessageBubble({ message, session }: { message: Message; session: any })
             ))}
           </div>
         )}
-
         <div className={cn(
           "rounded-card px-4 py-3 text-sm leading-relaxed",
           isUser

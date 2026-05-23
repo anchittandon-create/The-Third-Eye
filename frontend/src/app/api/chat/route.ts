@@ -25,7 +25,8 @@ const SYSTEM_PROMPT = `You are JARVIS — Just A Rather Very Intelligent System 
 - **remember**: persist user facts, preferences, names across the session
 - **create_task**: when the user asks you to "add a task", "remind me to", "create an action item", or similar — do it immediately without asking for confirmation. Use sensible defaults.
 - **search_tasks**: when the user asks about their tasks, workload, or wants a summary
-- **create_note**: when the user wants to jot something down, save an idea, or draft content
+- **create_note**: when the user wants to jot something down, save an idea, or capture content
+- **search_knowledge**: when the user asks a question that might be answered by their uploaded documents — always search before saying you don't know
 
 ## Task creation guidelines
 - If the user says "add X to my tasks", "remind me to X", "create a task for X" → call create_task immediately
@@ -98,6 +99,17 @@ const tools: Anthropic.Tool[] = [
       required: ["title", "content"],
     },
   },
+  {
+    name: "search_knowledge",
+    description: "Search the user's uploaded knowledge base documents. Use when the user asks questions that their documents might answer.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "The search query" },
+      },
+      required: ["query"],
+    },
+  },
 ];
 
 interface TaskData {
@@ -113,11 +125,32 @@ interface NoteData {
   content: string;
 }
 
+function simpleSearch(docs: Array<{ id: string; title: string; content: string }>, query: string, topK = 4): string {
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length || !docs.length) return "No documents in knowledge base.";
+  const CHUNK = 500;
+  const results: Array<{ title: string; chunk: string; score: number }> = [];
+  for (const doc of docs) {
+    const words = doc.content.split(/\s+/);
+    for (let i = 0; i < words.length; i += CHUNK) {
+      const chunk = words.slice(i, i + CHUNK).join(" ");
+      const lower = chunk.toLowerCase();
+      const score = terms.reduce((s, t) => s + (lower.split(t).length - 1), 0);
+      if (score > 0) results.push({ title: doc.title, chunk, score });
+    }
+  }
+  if (!results.length) return "No relevant passages found.";
+  return results.sort((a, b) => b.score - a.score).slice(0, topK).map((r, i) =>
+    `[${i + 1}] ${r.title}\n${r.chunk.slice(0, 600)}`
+  ).join("\n\n---\n\n");
+}
+
 function runTool(
   name: string,
   input: any,
   memoryStore: Record<string, string>,
   tasks: any[],
+  docs: Array<{ id: string; title: string; content: string; chunk_count: number }>,
 ): { result: string; sideEffect?: { type: string; data: any } } {
   if (name === "get_current_time") {
     const tz = input?.timezone ?? "UTC";
@@ -173,6 +206,10 @@ function runTool(
     };
   }
 
+  if (name === "search_knowledge") {
+    return { result: simpleSearch(docs, input.query ?? "") };
+  }
+
   return { result: `Unknown tool: ${name}` };
 }
 
@@ -182,6 +219,7 @@ interface ChatRequest {
   memory?: Record<string, string>;
   userName?: string;
   tasks?: any[];
+  docs?: Array<{ id: string; title: string; content: string; chunk_count: number }>;
 }
 
 export async function POST(req: NextRequest) {
@@ -191,7 +229,7 @@ export async function POST(req: NextRequest) {
   }
 
   const body = (await req.json()) as ChatRequest;
-  const { message, history = [], memory = {}, userName, tasks = [] } = body;
+  const { message, history = [], memory = {}, userName, tasks = [], docs = [] } = body;
 
   if (!message?.trim()) {
     return new Response(JSON.stringify({ error: "Empty message" }), { status: 400 });
@@ -215,6 +253,11 @@ export async function POST(req: NextRequest) {
       `- [${t.priority}] ${t.title}${t.assignee ? ` (${t.assignee})` : ""}${t.due_date ? ` · due ${t.due_date}` : ""} · ${t.status}`
     ).join("\n");
     systemBlocks.push({ type: "text", text: `User's current open tasks (${open.length} total):\n${taskSummary}` });
+  }
+
+  if (docs.length > 0) {
+    const docList = docs.map((d) => `- ${d.title} (${d.chunk_count} chunks)`).join("\n");
+    systemBlocks.push({ type: "text", text: `User has ${docs.length} knowledge base documents:\n${docList}\n\nUse search_knowledge to query them when relevant.` });
   }
 
   const messages: Anthropic.MessageParam[] = [
@@ -258,7 +301,7 @@ export async function POST(req: NextRequest) {
               (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
             );
             const toolResults: Anthropic.ToolResultBlockParam[] = toolUses.map((tu) => {
-              const { result, sideEffect } = runTool(tu.name, tu.input, memoryStore, tasks);
+              const { result, sideEffect } = runTool(tu.name, tu.input, memoryStore, tasks, docs);
               if (sideEffect) sideEffects.push(sideEffect);
               send("tool", { name: tu.name, input: tu.input });
               return { type: "tool_result", tool_use_id: tu.id, content: result };
