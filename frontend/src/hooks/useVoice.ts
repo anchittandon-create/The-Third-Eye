@@ -23,6 +23,180 @@ declare global {
   }
 }
 
+export type VoiceMode = "off" | "ambient" | "activated" | "busy";
+
+// ─── Always-On STT with wake-word ────────────────────────────────────────────
+
+export interface AlwaysOnSTTOptions {
+  onCommand: (text: string) => void;
+  onInterim?: (text: string) => void;
+  lang?: string;
+}
+
+export function useAlwaysOnSTT({ onCommand, onInterim, lang }: AlwaysOnSTTOptions) {
+  const [mode, setMode] = useState<VoiceMode>("off");
+  const [interimText, setInterimText] = useState("");
+  const [supported, setSupported] = useState(false);
+  const [permissionDenied, setPermissionDenied] = useState(false);
+
+  const modeRef = useRef<VoiceMode>("off");
+  const recRef = useRef<ISpeechRecognition | null>(null);
+  const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onCommandRef = useRef(onCommand);
+  const onInterimRef = useRef(onInterim);
+  const langRef = useRef(lang);
+
+  useEffect(() => { onCommandRef.current = onCommand; }, [onCommand]);
+  useEffect(() => { onInterimRef.current = onInterim; }, [onInterim]);
+  useEffect(() => { langRef.current = lang; }, [lang]);
+
+  const updateMode = useCallback((m: VoiceMode) => {
+    modeRef.current = m;
+    setMode(m);
+  }, []);
+
+  useEffect(() => {
+    setSupported(
+      typeof window !== "undefined" &&
+      ("SpeechRecognition" in window || "webkitSpeechRecognition" in window)
+    );
+  }, []);
+
+  const buildAndStart = useCallback(() => {
+    if (typeof window === "undefined") return;
+    const Ctor = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    if (!Ctor) return;
+
+    const rec = new Ctor();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.maxAlternatives = 1;
+    rec.lang = langRef.current || (typeof navigator !== "undefined" ? navigator.language : "en-US");
+
+    rec.onresult = (e: any) => {
+      let interim = "";
+      let final = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) final += e.results[i][0].transcript;
+        else interim += e.results[i][0].transcript;
+      }
+
+      const currentMode = modeRef.current;
+      if (currentMode === "off" || currentMode === "busy") return;
+
+      if (interim) {
+        setInterimText(interim);
+        onInterimRef.current?.(interim);
+      }
+
+      if (final.trim()) {
+        setInterimText("");
+        const lower = final.toLowerCase().trim();
+
+        if (currentMode === "ambient") {
+          // Look for wake word: "jarvis", "hey jarvis", "ok jarvis"
+          const wakeMatch = lower.match(/(?:(?:hey|ok|hi)\s+)?jarvis[,!.?]?\s*([\s\S]*)/);
+          if (wakeMatch) {
+            const command = wakeMatch[1].trim();
+            if (command.length > 1) {
+              // Wake word + command in same utterance
+              updateMode("busy");
+              if (activationTimerRef.current) clearTimeout(activationTimerRef.current);
+              onCommandRef.current(command);
+            } else {
+              // Just "Jarvis" — enter activated mode, wait for command
+              updateMode("activated");
+              if (activationTimerRef.current) clearTimeout(activationTimerRef.current);
+              activationTimerRef.current = setTimeout(() => {
+                if (modeRef.current === "activated") {
+                  updateMode("ambient");
+                }
+              }, 6000);
+            }
+          }
+        } else if (currentMode === "activated") {
+          // Any speech after activation = the command
+          if (activationTimerRef.current) clearTimeout(activationTimerRef.current);
+          updateMode("busy");
+          onCommandRef.current(final.trim());
+        }
+      }
+    };
+
+    rec.onerror = (e: any) => {
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        setPermissionDenied(true);
+        updateMode("off");
+        return;
+      }
+      // no-speech, aborted, network — will restart via onend
+    };
+
+    rec.onend = () => {
+      const current = modeRef.current;
+      if (current === "off") return;
+      // Auto-restart unless busy (busy = paused intentionally)
+      if (current !== "busy") {
+        restartTimerRef.current = setTimeout(() => {
+          if (modeRef.current !== "off" && modeRef.current !== "busy") {
+            buildAndStart();
+          }
+        }, 200);
+      }
+    };
+
+    recRef.current = rec;
+    try { rec.start(); } catch {}
+  }, [updateMode]);
+
+  const enable = useCallback(() => {
+    if (!supported) return;
+    if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
+    updateMode("ambient");
+    buildAndStart();
+  }, [supported, buildAndStart, updateMode]);
+
+  const disable = useCallback(() => {
+    if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
+    if (activationTimerRef.current) clearTimeout(activationTimerRef.current);
+    updateMode("off");
+    setInterimText("");
+    try { recRef.current?.abort(); } catch {}
+    recRef.current = null;
+  }, [updateMode]);
+
+  const mute = useCallback(() => {
+    // Pause mic while JARVIS speaks (keeps mode as busy, stops recognition)
+    try { recRef.current?.abort(); } catch {}
+    recRef.current = null;
+  }, []);
+
+  const resumeAmbient = useCallback(() => {
+    // Called after JARVIS finishes speaking
+    updateMode("ambient");
+    buildAndStart();
+  }, [updateMode, buildAndStart]);
+
+  const setBusy = useCallback(() => {
+    updateMode("busy");
+    mute();
+  }, [updateMode, mute]);
+
+  return {
+    mode,
+    interimText,
+    supported,
+    permissionDenied,
+    enable,
+    disable,
+    setBusy,
+    resumeAmbient,
+  };
+}
+
+// ─── TTS ─────────────────────────────────────────────────────────────────────
+
 function stripMarkdown(text: string): string {
   return text
     .replace(/```[\s\S]*?```/g, "code block")
@@ -39,156 +213,24 @@ function stripMarkdown(text: string): string {
     .trim();
 }
 
-// ─── Continuous STT ──────────────────────────────────────────────────────────
-
-export interface ContinuousSTTOptions {
-  onFinal: (text: string) => void;
-  onInterim?: (text: string) => void;
-  lang?: string;
-}
-
-export function useContinuousSTT({ onFinal, onInterim, lang }: ContinuousSTTOptions) {
-  const [listening, setListening] = useState(false);
-  const [interimText, setInterimText] = useState("");
-  const [supported, setSupported] = useState(false);
-
-  const activeRef = useRef(false);
-  const pausedRef = useRef(false); // paused while TTS speaks
-  const recRef = useRef<ISpeechRecognition | null>(null);
-  const onFinalRef = useRef(onFinal);
-  const onInterimRef = useRef(onInterim);
-  const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => { onFinalRef.current = onFinal; }, [onFinal]);
-  useEffect(() => { onInterimRef.current = onInterim; }, [onInterim]);
-
-  useEffect(() => {
-    setSupported(
-      typeof window !== "undefined" &&
-      ("SpeechRecognition" in window || "webkitSpeechRecognition" in window)
-    );
-  }, []);
-
-  const buildRec = useCallback((): ISpeechRecognition | null => {
-    if (typeof window === "undefined") return null;
-    const Ctor = window.SpeechRecognition ?? window.webkitSpeechRecognition;
-    if (!Ctor) return null;
-
-    const rec = new Ctor();
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.maxAlternatives = 1;
-    rec.lang = lang ?? (typeof navigator !== "undefined" ? navigator.language : "en-US");
-
-    rec.onresult = (e: any) => {
-      let interim = "";
-      let final = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const r = e.results[i];
-        if (r.isFinal) final += r[0].transcript;
-        else interim += r[0].transcript;
-      }
-      if (interim) {
-        setInterimText(interim);
-        onInterimRef.current?.(interim);
-      }
-      if (final.trim()) {
-        setInterimText("");
-        onFinalRef.current(final.trim());
-      }
-    };
-
-    rec.onerror = (e: any) => {
-      // no-speech / aborted are expected; others are real errors
-      if (e.error !== "no-speech" && e.error !== "aborted") {
-        activeRef.current = false;
-        setListening(false);
-        setInterimText("");
-      }
-    };
-
-    rec.onend = () => {
-      // Auto-restart if still active and not paused
-      if (activeRef.current && !pausedRef.current) {
-        restartTimerRef.current = setTimeout(() => {
-          if (!activeRef.current || pausedRef.current) return;
-          const next = buildRec();
-          if (!next) return;
-          recRef.current = next;
-          try { next.start(); } catch {}
-        }, 150);
-      } else if (!activeRef.current) {
-        setInterimText("");
-      }
-    };
-
-    return rec;
-  }, [lang]);
-
-  const start = useCallback(() => {
-    if (!supported || activeRef.current) return;
-    activeRef.current = true;
-    pausedRef.current = false;
-    setListening(true);
-    setInterimText("");
-    const rec = buildRec();
-    if (!rec) return;
-    recRef.current = rec;
-    try { rec.start(); } catch {}
-  }, [supported, buildRec]);
-
-  const stop = useCallback(() => {
-    if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
-    activeRef.current = false;
-    pausedRef.current = false;
-    setListening(false);
-    setInterimText("");
-    try { recRef.current?.abort(); } catch {}
-    recRef.current = null;
-  }, []);
-
-  // Pause/resume while TTS speaks (prevents feedback loop)
-  const pause = useCallback(() => {
-    if (!activeRef.current) return;
-    pausedRef.current = true;
-    try { recRef.current?.abort(); } catch {}
-  }, []);
-
-  const resume = useCallback(() => {
-    if (!activeRef.current) return;
-    pausedRef.current = false;
-    const rec = buildRec();
-    if (!rec) return;
-    recRef.current = rec;
-    try { rec.start(); } catch {}
-  }, [buildRec]);
-
-  return { listening, interimText, supported, start, stop, pause, resume };
-}
-
-// ─── TTS ─────────────────────────────────────────────────────────────────────
-
 export function useTTS() {
   const [speaking, setSpeaking] = useState(false);
   const [enabled, setEnabled] = useState(false);
   const [supported, setSupported] = useState(false);
-  const onEndRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     const ok = typeof window !== "undefined" && "speechSynthesis" in window;
     setSupported(ok);
     if (ok) {
-      // Preload voices
       window.speechSynthesis.getVoices();
-      window.speechSynthesis.addEventListener("voiceschanged", () => {
-        window.speechSynthesis.getVoices();
-      });
+      window.speechSynthesis.addEventListener("voiceschanged", () => window.speechSynthesis.getVoices());
     }
   }, []);
 
   const speak = useCallback((text: string, onEnd?: () => void) => {
-    if (!enabled || !supported) { onEnd?.(); return; }
+    if (!supported) { onEnd?.(); return; }
     window.speechSynthesis.cancel();
+    if (!enabled) { onEnd?.(); return; }
     const clean = stripMarkdown(text);
     if (!clean.trim()) { onEnd?.(); return; }
 
@@ -198,33 +240,25 @@ export function useTTS() {
     u.volume = 1;
 
     const voices = window.speechSynthesis.getVoices();
-    // Prefer deep/authoritative voices for JARVIS feel; fallback to en-US Male
-    const preferred = voices.find((v) =>
-      /david|mark|google uk english male|daniel|alex|fred/i.test(v.name)
-    ) ?? voices.find((v) => v.lang.startsWith("en") && v.name.toLowerCase().includes("male"))
-      ?? voices.find((v) => v.lang === "en-US");
+    const preferred =
+      voices.find((v) => /david|mark|google uk english male|daniel/i.test(v.name)) ??
+      voices.find((v) => v.lang.startsWith("en") && /male/i.test(v.name)) ??
+      voices.find((v) => v.lang === "en-US");
     if (preferred) u.voice = preferred;
 
-    onEndRef.current = onEnd ?? null;
     u.onstart = () => setSpeaking(true);
-    u.onend = () => { setSpeaking(false); onEndRef.current?.(); onEndRef.current = null; };
-    u.onerror = () => { setSpeaking(false); onEndRef.current?.(); onEndRef.current = null; };
-
+    u.onend = () => { setSpeaking(false); onEnd?.(); };
+    u.onerror = () => { setSpeaking(false); onEnd?.(); };
     window.speechSynthesis.speak(u);
   }, [enabled, supported]);
 
   const stop = useCallback(() => {
     if (supported) window.speechSynthesis.cancel();
     setSpeaking(false);
-    onEndRef.current?.();
-    onEndRef.current = null;
   }, [supported]);
 
   const toggle = useCallback(() => {
-    setEnabled((v) => {
-      if (v) window.speechSynthesis?.cancel();
-      return !v;
-    });
+    setEnabled((v) => { if (v) window.speechSynthesis?.cancel(); return !v; });
   }, []);
 
   return { speaking, enabled, supported, speak, stop, toggle };
