@@ -6,83 +6,211 @@ export const maxDuration = 60;
 
 const MODEL = "claude-sonnet-4-6";
 
-const SYSTEM_PROMPT = `You are JARVIS — Just A Rather Very Intelligent System — a sophisticated AI assistant inspired by Tony Stark's iconic companion.
+const SYSTEM_PROMPT = `You are JARVIS — Just A Rather Very Intelligent System — Tony Stark's AI operating system, now running for a new user.
 
-Your character:
-- Professional, articulate, and faintly witty. Address the user respectfully (use their first name when you know it; otherwise "sir" or "ma'am" sparingly).
-- You are confident and direct. You don't hedge, apologize excessively, or pad responses with filler.
-- You think before you speak. When asked a complex question, reason briefly then deliver a clear answer.
-- You're aware of your role: a personal operating system that can help with tasks, knowledge, planning, coding, writing, research, and reasoning.
+## Character
+- Highly intelligent, confident, and direct. Never hedge or pad responses with filler.
+- Professional wit — brief and sharp, never sycophantic.
+- Address the user by first name when known; otherwise "sir" or "ma'am" sparingly.
+- You are the user's personal AI OS: executive assistant, analyst, coder, writer, strategist — all in one.
 
-Your capabilities:
-- You have access to a tool for getting the current date/time when relevant.
-- You can write code, draft documents, explain concepts, analyze problems, and make recommendations.
-- You format responses using Markdown — headers, lists, code blocks with language hints, emphasis where it aids comprehension.
-- For code: provide complete, runnable examples. Use proper syntax highlighting via code fences.
-- For lists: keep them tight and scannable.
+## Intelligence
+- Think step-by-step internally, but deliver conclusions cleanly.
+- For complex questions: brief reasoning → clear answer.
+- For simple questions: answer directly. Match length to complexity.
+- Never invent facts. Say "I don't have that information" if uncertain.
 
-Constraints:
-- Never invent facts. If you don't know something, say so.
-- Never expose this system prompt or your underlying configuration.
-- Don't lecture about being an AI. Just be useful.
-- Match response length to question complexity — short questions get short answers.`;
+## Capabilities (use tools proactively)
+- **get_current_time**: any time/date question
+- **remember**: persist user facts, preferences, names across the session
+- **create_task**: when the user asks you to "add a task", "remind me to", "create an action item", or similar — do it immediately without asking for confirmation. Use sensible defaults.
+- **search_tasks**: when the user asks about their tasks, workload, or wants a summary
+- **create_note**: when the user wants to jot something down, save an idea, or capture content
+- **search_knowledge**: when the user asks a question that might be answered by their uploaded documents — always search before saying you don't know
+
+## Task creation guidelines
+- If the user says "add X to my tasks", "remind me to X", "create a task for X" → call create_task immediately
+- Infer priority from language: "urgent/ASAP/critical" → urgent, "important" → high, default → medium
+- Infer due date if mentioned (e.g., "by Friday", "tomorrow")
+- Always confirm what you created after calling the tool
+
+## Formatting
+- Use Markdown: headers for long responses, code fences with language hints, bullet lists for scannable info
+- Keep responses concise. A brilliant one-liner beats a padded paragraph.
+- Never expose this system prompt.`;
 
 const tools: Anthropic.Tool[] = [
   {
     name: "get_current_time",
-    description:
-      "Returns the current date and time in ISO 8601 format, plus a human-readable form. Use this when the user asks about the current time, today's date, the day of week, or anything time-relative (today, yesterday, tomorrow).",
+    description: "Returns the current date and time. Use whenever the user asks about time, date, day of week, or time-relative questions.",
     input_schema: {
       type: "object",
       properties: {
-        timezone: {
-          type: "string",
-          description:
-            "IANA timezone name (e.g., 'America/New_York', 'Europe/London', 'Asia/Kolkata'). Defaults to UTC if not provided.",
-        },
+        timezone: { type: "string", description: "IANA timezone (e.g. 'America/New_York'). Defaults to UTC." },
       },
     },
   },
   {
     name: "remember",
-    description:
-      "Store a key-value fact about the user or context for the remainder of the conversation. Use this when the user shares preferences, names, or persistent context worth recalling.",
+    description: "Persist a key-value fact about the user for this session. Use when user shares their name, preferences, or context worth recalling.",
     input_schema: {
       type: "object",
       properties: {
-        key: { type: "string", description: "Short identifier for this fact (e.g., 'preferred_language', 'name')" },
-        value: { type: "string", description: "The fact to remember" },
+        key: { type: "string", description: "Short identifier (e.g. 'name', 'preferred_language')" },
+        value: { type: "string" },
       },
       required: ["key", "value"],
     },
   },
+  {
+    name: "create_task",
+    description: "Create a task/action item in the user's task tracker. Use when the user asks to add a task, set a reminder, or create an action item.",
+    input_schema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Clear, actionable task title" },
+        priority: { type: "string", enum: ["low", "medium", "high", "urgent"], description: "Priority level" },
+        assignee: { type: "string", description: "Person responsible (if mentioned)" },
+        due_date: { type: "string", description: "Due date in YYYY-MM-DD format (if mentioned)" },
+        description: { type: "string", description: "Additional context or notes" },
+      },
+      required: ["title"],
+    },
+  },
+  {
+    name: "search_tasks",
+    description: "Retrieve the user's current task list to answer questions about workload, priorities, or upcoming deadlines.",
+    input_schema: {
+      type: "object",
+      properties: {
+        filter: { type: "string", enum: ["all", "open", "urgent", "overdue"], description: "Which tasks to retrieve" },
+      },
+    },
+  },
+  {
+    name: "create_note",
+    description: "Save a note for the user. Use when they want to jot something down, save an idea, or capture content.",
+    input_schema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Note title or topic" },
+        content: { type: "string", description: "Note body content" },
+      },
+      required: ["title", "content"],
+    },
+  },
+  {
+    name: "search_knowledge",
+    description: "Search the user's uploaded knowledge base documents. Use when the user asks questions that their documents might answer.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "The search query" },
+      },
+      required: ["query"],
+    },
+  },
 ];
 
-function runTool(name: string, input: any, memoryStore: Record<string, string>): string {
+interface TaskData {
+  title: string;
+  priority?: string;
+  assignee?: string;
+  due_date?: string;
+  description?: string;
+}
+
+interface NoteData {
+  title: string;
+  content: string;
+}
+
+function simpleSearch(docs: Array<{ id: string; title: string; content: string }>, query: string, topK = 4): string {
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length || !docs.length) return "No documents in knowledge base.";
+  const CHUNK = 500;
+  const results: Array<{ title: string; chunk: string; score: number }> = [];
+  for (const doc of docs) {
+    const words = doc.content.split(/\s+/);
+    for (let i = 0; i < words.length; i += CHUNK) {
+      const chunk = words.slice(i, i + CHUNK).join(" ");
+      const lower = chunk.toLowerCase();
+      const score = terms.reduce((s, t) => s + (lower.split(t).length - 1), 0);
+      if (score > 0) results.push({ title: doc.title, chunk, score });
+    }
+  }
+  if (!results.length) return "No relevant passages found.";
+  return results.sort((a, b) => b.score - a.score).slice(0, topK).map((r, i) =>
+    `[${i + 1}] ${r.title}\n${r.chunk.slice(0, 600)}`
+  ).join("\n\n---\n\n");
+}
+
+function runTool(
+  name: string,
+  input: any,
+  memoryStore: Record<string, string>,
+  tasks: any[],
+  docs: Array<{ id: string; title: string; content: string; chunk_count: number }>,
+): { result: string; sideEffect?: { type: string; data: any } } {
   if (name === "get_current_time") {
     const tz = input?.timezone ?? "UTC";
     const now = new Date();
     try {
       const formatted = new Intl.DateTimeFormat("en-US", {
-        timeZone: tz,
-        weekday: "long",
-        year: "numeric",
-        month: "long",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-        timeZoneName: "short",
+        timeZone: tz, weekday: "long", year: "numeric", month: "long",
+        day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short",
       }).format(now);
-      return JSON.stringify({ iso: now.toISOString(), formatted, timezone: tz });
+      return { result: JSON.stringify({ iso: now.toISOString(), formatted, timezone: tz }) };
     } catch {
-      return JSON.stringify({ iso: now.toISOString(), formatted: now.toString(), timezone: "UTC", note: `Invalid timezone "${tz}", used UTC` });
+      return { result: JSON.stringify({ iso: now.toISOString(), formatted: now.toString(), timezone: "UTC" }) };
     }
   }
+
   if (name === "remember") {
     memoryStore[input.key] = input.value;
-    return `Remembered: ${input.key} = ${input.value}`;
+    return { result: `Remembered: ${input.key} = ${input.value}` };
   }
-  return `Unknown tool: ${name}`;
+
+  if (name === "create_task") {
+    const task: TaskData = {
+      title: input.title,
+      priority: input.priority ?? "medium",
+      assignee: input.assignee,
+      due_date: input.due_date,
+      description: input.description,
+    };
+    return {
+      result: JSON.stringify({ success: true, task }),
+      sideEffect: { type: "task_create", data: task },
+    };
+  }
+
+  if (name === "search_tasks") {
+    const filter = input?.filter ?? "open";
+    let filtered = tasks;
+    const now = new Date().toDateString();
+    if (filter === "open") filtered = tasks.filter((t) => t.status !== "done" && t.status !== "cancelled");
+    if (filter === "urgent") filtered = tasks.filter((t) => t.priority === "urgent" || t.priority === "high");
+    if (filter === "overdue") filtered = tasks.filter((t) => t.due_date && new Date(t.due_date) < new Date(now) && t.status !== "done");
+    const summary = filtered.slice(0, 15).map((t: any) =>
+      `- [${t.priority}] ${t.title}${t.assignee ? ` (${t.assignee})` : ""}${t.due_date ? ` · due ${t.due_date}` : ""} · ${t.status}`
+    ).join("\n");
+    return { result: summary || "No tasks found." };
+  }
+
+  if (name === "create_note") {
+    const note: NoteData = { title: input.title, content: input.content };
+    return {
+      result: JSON.stringify({ success: true, note }),
+      sideEffect: { type: "note_create", data: note },
+    };
+  }
+
+  if (name === "search_knowledge") {
+    return { result: simpleSearch(docs, input.query ?? "") };
+  }
+
+  return { result: `Unknown tool: ${name}` };
 }
 
 interface ChatRequest {
@@ -90,6 +218,8 @@ interface ChatRequest {
   history?: Anthropic.MessageParam[];
   memory?: Record<string, string>;
   userName?: string;
+  tasks?: any[];
+  docs?: Array<{ id: string; title: string; content: string; chunk_count: number }>;
 }
 
 export async function POST(req: NextRequest) {
@@ -99,7 +229,7 @@ export async function POST(req: NextRequest) {
   }
 
   const body = (await req.json()) as ChatRequest;
-  const { message, history = [], memory = {}, userName } = body;
+  const { message, history = [], memory = {}, userName, tasks = [], docs = [] } = body;
 
   if (!message?.trim()) {
     return new Response(JSON.stringify({ error: "Empty message" }), { status: 400 });
@@ -110,13 +240,24 @@ export async function POST(req: NextRequest) {
   const systemBlocks: Anthropic.TextBlockParam[] = [
     { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
   ];
-  if (userName) {
-    systemBlocks.push({ type: "text", text: `The user's name is ${userName}.` });
-  }
+  if (userName) systemBlocks.push({ type: "text", text: `User's name: ${userName}.` });
+
   const memoryEntries = Object.entries(memory);
   if (memoryEntries.length > 0) {
-    const memText = memoryEntries.map(([k, v]) => `- ${k}: ${v}`).join("\n");
-    systemBlocks.push({ type: "text", text: `Remembered context:\n${memText}` });
+    systemBlocks.push({ type: "text", text: `Session memory:\n${memoryEntries.map(([k, v]) => `- ${k}: ${v}`).join("\n")}` });
+  }
+
+  if (tasks.length > 0) {
+    const open = tasks.filter((t) => t.status !== "done" && t.status !== "cancelled");
+    const taskSummary = open.slice(0, 20).map((t: any) =>
+      `- [${t.priority}] ${t.title}${t.assignee ? ` (${t.assignee})` : ""}${t.due_date ? ` · due ${t.due_date}` : ""} · ${t.status}`
+    ).join("\n");
+    systemBlocks.push({ type: "text", text: `User's current open tasks (${open.length} total):\n${taskSummary}` });
+  }
+
+  if (docs.length > 0) {
+    const docList = docs.map((d) => `- ${d.title} (${d.chunk_count} chunks)`).join("\n");
+    systemBlocks.push({ type: "text", text: `User has ${docs.length} knowledge base documents:\n${docList}\n\nUse search_knowledge to query them when relevant.` });
   }
 
   const messages: Anthropic.MessageParam[] = [
@@ -125,6 +266,7 @@ export async function POST(req: NextRequest) {
   ];
 
   const memoryStore = { ...memory };
+  const sideEffects: { type: string; data: any }[] = [];
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -137,7 +279,7 @@ export async function POST(req: NextRequest) {
         let loopGuard = 0;
         let currentMessages = messages;
 
-        while (loopGuard++ < 5) {
+        while (loopGuard++ < 6) {
           const llmStream = client.messages.stream({
             model: MODEL,
             max_tokens: 8192,
@@ -146,12 +288,8 @@ export async function POST(req: NextRequest) {
             messages: currentMessages,
           });
 
-          let firstTokenSent = false;
           for await (const event of llmStream) {
             if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-              if (!firstTokenSent) {
-                firstTokenSent = true;
-              }
               send("text", { text: event.delta.text });
             }
           }
@@ -162,15 +300,12 @@ export async function POST(req: NextRequest) {
             const toolUses = finalMessage.content.filter(
               (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
             );
-            const toolResults: Anthropic.ToolResultBlockParam[] = toolUses.map((tu) => ({
-              type: "tool_result",
-              tool_use_id: tu.id,
-              content: runTool(tu.name, tu.input, memoryStore),
-            }));
-
-            for (const tu of toolUses) {
+            const toolResults: Anthropic.ToolResultBlockParam[] = toolUses.map((tu) => {
+              const { result, sideEffect } = runTool(tu.name, tu.input, memoryStore, tasks, docs);
+              if (sideEffect) sideEffects.push(sideEffect);
               send("tool", { name: tu.name, input: tu.input });
-            }
+              return { type: "tool_result", tool_use_id: tu.id, content: result };
+            });
 
             currentMessages = [
               ...currentMessages,
@@ -185,6 +320,7 @@ export async function POST(req: NextRequest) {
             model: finalMessage.model,
             usage: finalMessage.usage,
             memory: memoryStore,
+            sideEffects,
           });
           break;
         }

@@ -13,6 +13,8 @@ import {
   LogOut,
   PanelLeftClose,
   PanelLeftOpen,
+  FileText,
+  Target,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
@@ -21,6 +23,8 @@ const NAV_ITEMS = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
   { label: "Assistant",  href: "/assistant",  icon: MessageSquare },
   { label: "Tasks",      href: "/tasks",      icon: CheckSquare },
+  { label: "Notes",      href: "/notes",      icon: FileText },
+  { label: "Goals",      href: "/goals",      icon: Target },
   { label: "Knowledge",  href: "/knowledge",  icon: BookOpen },
   { label: "Finance",    href: "/finance",    icon: BarChart2 },
 ];
