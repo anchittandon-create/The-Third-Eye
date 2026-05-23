@@ -6,7 +6,7 @@ import { Send, Cpu, Zap, RotateCcw, Volume2, VolumeX, Mic, MicOff, Globe, AlertC
 import { cn } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useWhisperSTT, useTTS } from "@/hooks/useVoice";
+import { useVoiceSTT, useTTS } from "@/hooks/useVoice";
 import { useLocalTasks } from "@/hooks/useLocalTasks";
 import { useLocalKnowledge } from "@/hooks/useLocalKnowledge";
 
@@ -19,10 +19,10 @@ interface Message {
   error?: string;
 }
 
-// Live voice bubble shown while mic is active
 interface LiveBubble {
-  phase: "recording" | "transcribing";
+  phase: "recording" | "transcribing" | "interim";
   level: number;
+  text?: string;
 }
 
 interface HistoryEntry {
@@ -72,33 +72,57 @@ export function AssistantClient({ userName }: { userName?: string }) {
   const abortRef = useRef<AbortController | null>(null);
   const isStreamingRef = useRef(false);
   const sendRef = useRef<(text?: string) => Promise<void>>(async () => {});
-  const levelRef = useRef(0);
+
+  // Echo suppression: suppress VAD while TTS is speaking + brief cooldown after
+  const suppressRef = useRef(false);
+  const cooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { allTasks, create: createTask } = useLocalTasks();
   const { docs } = useLocalKnowledge();
   const tts = useTTS();
 
-  const stt = useWhisperSTT({
-    lang: lang || undefined,
+  const stt = useVoiceSTT({
+    lang,
+    shouldSuppress: useCallback(() => suppressRef.current, []),
     onLevel: useCallback((l: number) => {
-      levelRef.current = l;
-      setLiveBubble((prev) => prev?.phase === "recording" ? { ...prev, level: l } : prev);
+      setLiveBubble((prev) => prev?.phase === "recording" || prev?.phase === "interim"
+        ? { ...prev, level: l } : prev);
     }, []),
     onSpeechStart: useCallback(() => {
-      if (isStreamingRef.current) return; // JARVIS is replying — ignore
       setLiveBubble({ phase: "recording", level: 0 });
     }, []),
     onSpeechEnd: useCallback(() => {
       setLiveBubble((prev) => prev ? { ...prev, phase: "transcribing" } : null);
     }, []),
-    onTranscribing: useCallback(() => {
-      setLiveBubble((prev) => prev ? { ...prev, phase: "transcribing" } : null);
+    onInterim: useCallback((text: string) => {
+      if (!text) {
+        setLiveBubble((prev) => prev ? { ...prev, phase: "transcribing" } : null);
+        return;
+      }
+      setLiveBubble((prev) => ({
+        phase: "interim",
+        level: prev?.level ?? 0,
+        text,
+      }));
     }, []),
     onTranscript: useCallback((text: string) => {
       setLiveBubble(null);
       if (!isStreamingRef.current) sendRef.current(text);
     }, []),
   });
+
+  // Track TTS state in a ref so callbacks can see it
+  useEffect(() => {
+    if (tts.speaking) {
+      if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current);
+      suppressRef.current = true;
+    } else {
+      // brief cooldown after TTS ends to let mic settle
+      cooldownTimerRef.current = setTimeout(() => {
+        suppressRef.current = false;
+      }, 800);
+    }
+  }, [tts.speaking]);
 
   // Auto-start mic on mount
   useEffect(() => {
@@ -213,7 +237,7 @@ export function AssistantClient({ userName }: { userName?: string }) {
                     }
                   }
                 }
-                // Speak response; mic will stay active (not paused — it auto-ignores during streaming)
+                // Suppress VAD while TTS speaks (useEffect on tts.speaking handles this)
                 tts.speak(fullText);
               }
             } catch { /* non-JSON */ }
@@ -267,24 +291,27 @@ export function AssistantClient({ userName }: { userName?: string }) {
       <div className="flex-none flex items-center justify-between px-4 sm:px-8 py-2 border-b border-border-default bg-background-surface">
         <div className="flex items-center gap-2">
           <span className={cn("w-1.5 h-1.5 rounded-full",
-            micOn && !isStreaming ? "bg-success animate-pulse" : isStreaming ? "bg-accent-violet animate-pulse" : "bg-text-muted"
+            tts.speaking ? "bg-accent-violet animate-pulse"
+            : suppressRef.current ? "bg-warning animate-pulse"
+            : liveBubble?.phase === "recording" || liveBubble?.phase === "interim" ? "bg-accent-blue animate-pulse"
+            : micOn && !isStreaming ? "bg-success animate-pulse"
+            : isStreaming ? "bg-accent-violet animate-pulse"
+            : "bg-text-muted"
           )} />
           <span className="text-xs font-mono text-text-muted">
-            {isStreaming ? "JARVIS responding…"
-              : liveBubble?.phase === "transcribing" ? "Transcribing…"
+            {tts.speaking ? "JARVIS speaking…"
+              : isStreaming ? "JARVIS responding…"
+              : liveBubble?.phase === "transcribing" ? "Recognising…"
+              : liveBubble?.phase === "interim" ? "Listening…"
               : liveBubble?.phase === "recording" ? "Listening…"
               : micOn ? "Ready — just speak"
               : "Mic off"}
           </span>
-          {stt.whisperAvailable === false && micOn && (
-            <span className="text-[10px] font-mono text-warning ml-2">· Add OPENAI_API_KEY for Whisper</span>
-          )}
           {apiError?.includes("ANTHROPIC_API_KEY") && (
             <span className="text-[10px] font-mono text-accent-red ml-2">· Add ANTHROPIC_API_KEY in Vercel</span>
           )}
         </div>
         <div className="flex items-center gap-1 relative">
-          {/* Language picker */}
           <button onClick={() => setShowLang((v) => !v)}
             className={cn("p-1.5 rounded-input transition-colors", showLang ? "text-accent-blue" : "text-text-muted hover:text-text-secondary")}>
             <Globe size={12} />
@@ -335,18 +362,20 @@ export function AssistantClient({ userName }: { userName?: string }) {
 
         {messages.map((msg) => <MessageBubble key={msg.id} message={msg} session={session} />)}
 
-        {/* Live voice bubble — appears while user is speaking / transcribing */}
+        {/* Live voice bubble — waveform or interim text */}
         {liveBubble && (
           <div className="flex items-start gap-3 animate-slide-in flex-row-reverse">
             <UserAvatar session={session} />
             <div className="max-w-[85%] sm:max-w-[75%] items-end flex flex-col">
               <div className="rounded-card px-4 py-3 bg-accent-blue/10 border border-accent-blue/20">
-                {liveBubble.phase === "recording" ? (
+                {liveBubble.phase === "interim" && liveBubble.text ? (
+                  <span className="text-sm text-text-primary italic">{liveBubble.text}</span>
+                ) : liveBubble.phase === "recording" ? (
                   <VoiceWaveform level={liveBubble.level} />
                 ) : (
                   <div className="flex items-center gap-2 text-text-muted text-sm">
                     <span className="w-1.5 h-1.5 rounded-full bg-accent-blue animate-pulse" />
-                    Transcribing…
+                    Recognising…
                   </div>
                 )}
               </div>
@@ -354,8 +383,8 @@ export function AssistantClient({ userName }: { userName?: string }) {
           </div>
         )}
 
-        {/* JARVIS "listening" indicator at bottom when mic on and not streaming */}
-        {micOn && !isStreaming && !liveBubble && messages.length > 0 && (
+        {/* Listening indicator between turns */}
+        {micOn && !isStreaming && !tts.speaking && !liveBubble && messages.length > 0 && (
           <div className="flex items-center gap-2 justify-center py-2">
             <span className="w-1 h-1 rounded-full bg-success animate-pulse" />
             <span className="text-[11px] font-mono text-text-muted">listening</span>
