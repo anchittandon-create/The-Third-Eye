@@ -2,14 +2,11 @@
 
 import { useState, useRef, useEffect, useCallback, KeyboardEvent } from "react";
 import { useSession } from "next-auth/react";
-import {
-  Send, Cpu, Zap, RotateCcw, Volume2, VolumeX,
-  MicOff, Mic, Globe, AlertCircle,
-} from "lucide-react";
+import { Send, Cpu, Zap, RotateCcw, Volume2, VolumeX, Mic, MicOff, Globe, AlertCircle, Info } from "lucide-react";
 import { cn } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useAlwaysOnSTT, useTTS, type VoiceMode } from "@/hooks/useVoice";
+import { useAlwaysOn, useTTS, type VoiceMode, type AudioState } from "@/hooks/useVoice";
 import { useLocalTasks } from "@/hooks/useLocalTasks";
 import { useLocalKnowledge } from "@/hooks/useLocalKnowledge";
 
@@ -19,6 +16,7 @@ interface Message {
   content: string;
   streaming?: boolean;
   toolsUsed?: string[];
+  error?: string;
 }
 
 interface HistoryEntry {
@@ -27,8 +25,8 @@ interface HistoryEntry {
 }
 
 const SUGGESTIONS = [
-  "What are my most urgent tasks?",
-  "Add a task: review Q2 metrics by Friday",
+  'Say "Jarvis, what are my urgent tasks?"',
+  'Say "Jarvis, add a task: review Q2 by Friday"',
   "What's today's date and time?",
   "Help me plan my week",
   "Search my knowledge base",
@@ -36,16 +34,16 @@ const SUGGESTIONS = [
 ];
 
 const LANGUAGES = [
-  { code: "", label: "Auto (browser locale)" },
+  { code: "", label: "Auto" },
   { code: "en-US", label: "English (US)" },
   { code: "en-GB", label: "English (UK)" },
-  { code: "hi-IN", label: "हिन्दी (Hindi)" },
+  { code: "hi-IN", label: "हिन्दी" },
   { code: "es-ES", label: "Español" },
   { code: "fr-FR", label: "Français" },
   { code: "de-DE", label: "Deutsch" },
-  { code: "pt-BR", label: "Português (BR)" },
+  { code: "pt-BR", label: "Português" },
   { code: "ja-JP", label: "日本語" },
-  { code: "zh-CN", label: "普通话" },
+  { code: "zh-CN", label: "中文" },
   { code: "ar-SA", label: "العربية" },
   { code: "ko-KR", label: "한국어" },
 ];
@@ -57,6 +55,7 @@ export function AssistantClient({ userName }: { userName?: string }) {
   const [isStreaming, setIsStreaming] = useState(false);
   const [lang, setLang] = useState("");
   const [showLang, setShowLang] = useState(false);
+  const [apiError, setApiError] = useState<string | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -64,41 +63,33 @@ export function AssistantClient({ userName }: { userName?: string }) {
   const memoryRef = useRef<Record<string, string>>({});
   const abortRef = useRef<AbortController | null>(null);
   const isStreamingRef = useRef(false);
-  const sendMessageRef = useRef<(text?: string) => Promise<void>>(async () => {});
+  const sendRef = useRef<(text?: string) => Promise<void>>(async () => {});
 
   const { allTasks, create: createTask } = useLocalTasks();
   const { docs } = useLocalKnowledge();
   const tts = useTTS();
 
-  const handleCommand = useCallback((text: string) => {
-    sendMessageRef.current(text);
-  }, []);
-
-  const stt = useAlwaysOnSTT({
-    onCommand: handleCommand,
+  const voice = useAlwaysOn({
+    onCommand: useCallback((text: string) => { sendRef.current(text); }, []),
     lang: lang || undefined,
   });
 
-  // Auto-enable on mount (requests mic permission)
+  // Auto-start on mount
   useEffect(() => {
-    if (stt.supported) stt.enable();
-    return () => stt.disable();
+    if (voice.supported) voice.enable();
+    return () => voice.disable();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stt.supported]);
+  }, [voice.supported]);
 
-  // Sync streaming ref
   useEffect(() => { isStreamingRef.current = isStreaming; }, [isStreaming]);
-
-  // Auto-scroll
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   const sendMessage = useCallback(async (text?: string) => {
     const msg = (text ?? input).trim();
     if (!msg || isStreamingRef.current) return;
 
     setInput("");
+    setApiError(null);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
 
     const userMsg: Message = { id: crypto.randomUUID(), role: "user", content: msg };
@@ -107,8 +98,7 @@ export function AssistantClient({ userName }: { userName?: string }) {
       id: assistantId, role: "assistant", content: "", streaming: true, toolsUsed: [],
     }]);
     setIsStreaming(true);
-    // Silence the mic while processing
-    stt.setBusy();
+    voice.setBusy();
 
     abortRef.current = new AbortController();
 
@@ -131,7 +121,12 @@ export function AssistantClient({ userName }: { userName?: string }) {
         signal: abortRef.current.signal,
       });
 
-      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        let errMsg = `HTTP ${res.status}`;
+        try { const j = await res.json(); errMsg = j.error ?? errMsg; } catch {}
+        throw new Error(errMsg);
+      }
+      if (!res.body) throw new Error("No response body");
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -162,6 +157,14 @@ export function AssistantClient({ userName }: { userName?: string }) {
                 setMessages((prev) => prev.map((m) =>
                   m.id === assistantId ? { ...m, toolsUsed: [...toolsUsed] } : m
                 ));
+              } else if (eventType === "error") {
+                const errMsg = parsed.message ?? "Unknown error from JARVIS";
+                setMessages((prev) => prev.map((m) =>
+                  m.id === assistantId ? { ...m, content: "", error: errMsg, streaming: false } : m
+                ));
+                setApiError(errMsg);
+                voice.resumeAmbient();
+                return;
               } else if (eventType === "done") {
                 if (parsed.memory) memoryRef.current = parsed.memory;
                 historyRef.current = [
@@ -172,27 +175,19 @@ export function AssistantClient({ userName }: { userName?: string }) {
                 if (parsed.sideEffects) {
                   for (const fx of parsed.sideEffects) {
                     if (fx.type === "task_create" && fx.data?.title) {
-                      createTask({
-                        title: fx.data.title, priority: fx.data.priority ?? "medium",
-                        status: "todo", assignee: fx.data.assignee,
-                        due_date: fx.data.due_date, description: fx.data.description,
-                      });
+                      createTask({ title: fx.data.title, priority: fx.data.priority ?? "medium", status: "todo", assignee: fx.data.assignee, due_date: fx.data.due_date, description: fx.data.description });
                     }
                     if (fx.type === "note_create" && fx.data?.title) {
                       const notes = JSON.parse(localStorage.getItem("jarvis_notes_v1") ?? "[]");
-                      notes.unshift({
-                        id: crypto.randomUUID(), title: fx.data.title, content: fx.data.content,
-                        pinned: false, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-                      });
+                      notes.unshift({ id: crypto.randomUUID(), title: fx.data.title, content: fx.data.content, pinned: false, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
                       localStorage.setItem("jarvis_notes_v1", JSON.stringify(notes));
                     }
                   }
                 }
-                // Speak, then resume ambient listening
-                tts.speak(fullText, () => stt.resumeAmbient());
-                if (!tts.enabled) stt.resumeAmbient();
+                tts.speak(fullText, () => voice.resumeAmbient());
+                if (!tts.enabled) voice.resumeAmbient();
               }
-            } catch { /* non-JSON */ }
+            } catch { /* non-JSON line */ }
             eventType = "";
           }
         }
@@ -202,20 +197,19 @@ export function AssistantClient({ userName }: { userName?: string }) {
         m.id === assistantId ? { ...m, streaming: false } : m
       ));
     } catch (err: any) {
-      if (err?.name === "AbortError") { stt.resumeAmbient(); return; }
+      if (err?.name === "AbortError") { voice.resumeAmbient(); return; }
+      const errMsg = err?.message ?? "Unknown error";
+      setApiError(errMsg);
       setMessages((prev) => prev.map((m) =>
-        m.id === assistantId
-          ? { ...m, content: "I encountered an error. Please try again.", streaming: false }
-          : m
+        m.id === assistantId ? { ...m, content: "", error: errMsg, streaming: false } : m
       ));
-      stt.resumeAmbient();
+      voice.resumeAmbient();
     } finally {
       setIsStreaming(false);
     }
-  }, [input, session, userName, allTasks, docs, createTask, tts, stt]);
+  }, [input, session, userName, allTasks, docs, createTask, tts, voice]);
 
-  // Always keep ref current
-  useEffect(() => { sendMessageRef.current = sendMessage; }, [sendMessage]);
+  useEffect(() => { sendRef.current = sendMessage; }, [sendMessage]);
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
@@ -225,33 +219,38 @@ export function AssistantClient({ userName }: { userName?: string }) {
     if (isStreaming) abortRef.current?.abort();
     tts.stop();
     setMessages([]);
+    setApiError(null);
     historyRef.current = [];
     memoryRef.current = {};
     setIsStreaming(false);
-    stt.resumeAmbient();
+    voice.resumeAmbient();
   }
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-      {/* Always-on voice status bar */}
-      <VoiceStatusBar
-        mode={stt.mode}
-        interimText={stt.interimText}
-        permissionDenied={stt.permissionDenied}
+      {/* Voice + API error status bar */}
+      <VoiceBar
+        mode={voice.mode}
+        audioState={voice.audioState}
+        level={voice.level}
+        supported={voice.supported}
+        whisperAvailable={voice.whisperAvailable}
+        permissionDenied={voice.permissionDenied}
         ttsEnabled={tts.enabled}
         ttsSpeaking={tts.speaking}
+        apiError={apiError}
         lang={lang}
         showLang={showLang}
         onToggleLang={() => setShowLang((v) => !v)}
         onSelectLang={(code) => { setLang(code); setShowLang(false); }}
         onToggleTTS={tts.toggle}
-        onToggleMic={() => stt.mode === "off" ? stt.enable() : stt.disable()}
+        onToggleMic={() => voice.mode === "off" ? voice.enable() : voice.disable()}
       />
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 sm:px-8 py-6 space-y-5">
         {messages.length === 0 ? (
-          <EmptyState userName={userName} onSuggest={sendMessage} />
+          <EmptyState userName={userName} supported={voice.supported} onSuggest={sendMessage} />
         ) : (
           messages.map((msg) => (
             <MessageBubble key={msg.id} message={msg} session={session} />
@@ -260,7 +259,7 @@ export function AssistantClient({ userName }: { userName?: string }) {
         <div ref={bottomRef} />
       </div>
 
-      {/* Text input */}
+      {/* Input */}
       <div className="flex-none px-4 sm:px-8 py-4 border-t border-border-default bg-background-base">
         <div className="flex items-end gap-3 bg-background-surface border border-border-default rounded-card px-4 py-3 focus-within:border-border-hover transition-colors duration-150">
           <textarea
@@ -268,7 +267,7 @@ export function AssistantClient({ userName }: { userName?: string }) {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={stt.mode !== "off" ? 'Say "Jarvis…" or type here' : "Message JARVIS…"}
+            placeholder={voice.mode !== "off" ? 'Say "Jarvis…" or type here' : "Message JARVIS…"}
             rows={1}
             disabled={isStreaming}
             className="flex-1 bg-transparent text-text-primary placeholder:text-text-muted text-sm resize-none outline-none max-h-32 leading-relaxed disabled:opacity-60"
@@ -285,21 +284,16 @@ export function AssistantClient({ userName }: { userName?: string }) {
               <RotateCcw size={13} />
             </button>
           )}
-          <button
-            onClick={() => sendMessage()}
-            disabled={!input.trim() || isStreaming}
-            className={cn(
-              "flex-none p-1.5 rounded-input transition-colors",
+          <button onClick={() => sendMessage()} disabled={!input.trim() || isStreaming}
+            className={cn("flex-none p-1.5 rounded-input transition-colors",
               input.trim() && !isStreaming ? "text-accent-blue hover:bg-accent-blue/10" : "text-text-muted cursor-not-allowed"
-            )}
-            title="Send (Enter)"
-          >
+            )} title="Send (Enter)">
             <Send size={15} />
           </button>
         </div>
         <p className="text-text-muted text-[11px] mt-2 text-center">
-          {stt.mode !== "off"
-            ? 'Say "Jarvis [your request]" · Enter to type · mic always on'
+          {voice.mode !== "off"
+            ? 'Say "Jarvis [command]" · pause to send · or type + Enter'
             : "Enter to send · Shift+Enter for new line"}
         </p>
       </div>
@@ -309,124 +303,141 @@ export function AssistantClient({ userName }: { userName?: string }) {
 
 // ─── Voice Status Bar ────────────────────────────────────────────────────────
 
-function VoiceStatusBar({
-  mode, interimText, permissionDenied, ttsEnabled, ttsSpeaking,
-  lang, showLang, onToggleLang, onSelectLang, onToggleTTS, onToggleMic,
+function VoiceBar({
+  mode, audioState, level, supported, whisperAvailable, permissionDenied,
+  ttsEnabled, ttsSpeaking, apiError, lang, showLang,
+  onToggleLang, onSelectLang, onToggleTTS, onToggleMic,
 }: {
-  mode: VoiceMode;
-  interimText: string;
-  permissionDenied: boolean;
-  ttsEnabled: boolean;
-  ttsSpeaking: boolean;
-  lang: string;
-  showLang: boolean;
-  onToggleLang: () => void;
-  onSelectLang: (code: string) => void;
-  onToggleTTS: () => void;
-  onToggleMic: () => void;
+  mode: VoiceMode; audioState: AudioState; level: number;
+  supported: boolean; whisperAvailable: boolean | null; permissionDenied: boolean;
+  ttsEnabled: boolean; ttsSpeaking: boolean; apiError: string | null;
+  lang: string; showLang: boolean;
+  onToggleLang: () => void; onSelectLang: (c: string) => void;
+  onToggleTTS: () => void; onToggleMic: () => void;
 }) {
-  const modeConfig = {
-    off: { label: "Voice off", color: "text-text-muted", bg: "bg-background-surface", dot: "bg-text-muted" },
-    ambient: { label: 'Listening for "Jarvis…"', color: "text-text-secondary", bg: "bg-background-surface", dot: "bg-success" },
-    activated: { label: "Go ahead…", color: "text-accent-blue", bg: "bg-accent-blue/5 border-accent-blue/20", dot: "bg-accent-blue" },
-    busy: { label: ttsSpeaking ? "Speaking…" : "Processing…", color: "text-accent-violet", bg: "bg-accent-violet/5 border-accent-violet/20", dot: "bg-accent-violet" },
-  } as const;
+  const isActive = mode === "activated";
+  const isBusy = mode === "busy";
 
-  const cfg = modeConfig[mode];
+  const statusLabel = () => {
+    if (permissionDenied) return "Mic blocked — allow access in browser settings";
+    if (mode === "off") return "Voice off — click mic to enable";
+    if (isBusy) return ttsSpeaking ? "JARVIS speaking…" : "Processing…";
+    if (isActive) return "Go ahead — I'm listening…";
+    if (audioState === "transcribing") return "Transcribing…";
+    if (audioState === "speaking") return 'Heard you — say "Jarvis" to activate';
+    return 'Listening for "Jarvis…"';
+  };
+
+  const dotColor = () => {
+    if (permissionDenied) return "bg-accent-red";
+    if (mode === "off") return "bg-text-muted";
+    if (isBusy) return "bg-accent-violet";
+    if (isActive) return "bg-accent-blue";
+    return "bg-success";
+  };
+
+  const barBg = isActive
+    ? "bg-accent-blue/5 border-accent-blue/20"
+    : isBusy
+    ? "bg-accent-violet/5 border-accent-violet/20"
+    : "";
 
   return (
-    <div className={cn(
-      "flex-none flex items-center gap-3 px-4 sm:px-8 py-2.5 border-b border-border-default transition-all duration-300",
-      mode !== "off" ? cfg.bg : ""
-    )}>
-      {/* Status dot + label */}
-      <div className="flex items-center gap-2 flex-1 min-w-0">
-        <span className={cn(
-          "w-1.5 h-1.5 rounded-full flex-none",
-          cfg.dot,
-          (mode === "ambient" || mode === "activated") && "animate-pulse"
-        )} />
-        <span className={cn("text-xs font-mono truncate", cfg.color)}>
-          {permissionDenied ? "Mic permission denied — check browser settings" : cfg.label}
+    <div className={cn("flex-none border-b border-border-default transition-all", barBg)}>
+      {/* API error banner */}
+      {apiError && (
+        <div className="flex items-center gap-2 px-4 sm:px-8 py-2 bg-accent-red/10 border-b border-accent-red/20">
+          <AlertCircle size={12} className="text-accent-red flex-none" />
+          <span className="text-xs text-accent-red flex-1 min-w-0 truncate">{apiError}</span>
+          {apiError.includes("ANTHROPIC_API_KEY") && (
+            <span className="text-[10px] text-accent-red/70 flex-none">→ Add key in Vercel Settings → Env Vars</span>
+          )}
+        </div>
+      )}
+
+      <div className="flex items-center gap-3 px-4 sm:px-8 py-2">
+        {/* Dot + label */}
+        <span className={cn("w-1.5 h-1.5 rounded-full flex-none", dotColor(),
+          mode !== "off" && !isBusy && "animate-pulse")} />
+
+        <span className={cn("text-xs font-mono flex-1 min-w-0 truncate",
+          isActive ? "text-accent-blue" : isBusy ? "text-accent-violet" : "text-text-muted")}>
+          {statusLabel()}
         </span>
 
-        {/* Live transcription */}
-        {interimText && mode !== "off" && mode !== "busy" && (
-          <>
-            <span className="text-text-muted text-xs mx-1">·</span>
-            <span className="text-text-primary text-xs italic truncate flex-1 min-w-0">
-              {interimText}
-            </span>
-          </>
+        {/* Audio level waveform (while listening/speaking) */}
+        {mode === "ambient" && audioState !== "idle" && audioState !== "transcribing" && (
+          <Waveform level={level} active={audioState === "speaking"} />
         )}
 
-        {/* Waveform animation when activated */}
-        {mode === "activated" && !interimText && (
-          <div className="flex gap-0.5 items-center ml-2">
-            {[0, 1, 2, 3, 4].map((i) => (
-              <span
-                key={i}
-                className="w-0.5 rounded-full bg-accent-blue animate-bounce"
-                style={{ height: `${6 + (i % 3) * 4}px`, animationDelay: `${i * 70}ms` }}
-              />
-            ))}
+        {/* Activated waveform */}
+        {isActive && <Waveform level={level} active />}
+
+        {/* Whisper not available warning */}
+        {mode !== "off" && whisperAvailable === false && (
+          <span className="text-[10px] font-mono text-warning flex items-center gap-1 flex-none">
+            <Info size={10} /> Add OPENAI_API_KEY for Whisper
+          </span>
+        )}
+
+        {/* Controls */}
+        <div className="flex items-center gap-0.5 flex-none relative">
+          <div className="relative">
+            <button onClick={onToggleLang}
+              className={cn("p-1.5 rounded-input transition-colors text-[10px] font-mono",
+                showLang ? "text-accent-blue" : "text-text-muted hover:text-text-secondary")}>
+              <Globe size={11} />
+            </button>
+            {showLang && (
+              <div className="absolute top-7 right-0 bg-background-elevated border border-border-default rounded-card shadow-xl z-50 min-w-[180px] py-1 max-h-60 overflow-y-auto">
+                {LANGUAGES.map((l) => (
+                  <button key={l.code} onClick={() => onSelectLang(l.code)}
+                    className={cn("w-full text-left px-3 py-1.5 text-xs transition-colors",
+                      lang === l.code ? "text-accent-blue bg-accent-blue/10" : "text-text-secondary hover:text-text-primary hover:bg-background-surface")}>
+                    {l.label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-        )}
 
-        {permissionDenied && (
-          <AlertCircle size={12} className="text-accent-red flex-none ml-1" />
-        )}
+          <button onClick={onToggleTTS} title={ttsEnabled ? "Mute voice" : "Enable voice"}
+            className={cn("p-1.5 rounded-input transition-colors",
+              ttsEnabled ? ttsSpeaking ? "text-accent-violet animate-pulse" : "text-accent-violet"
+                        : "text-text-muted hover:text-text-secondary")}>
+            {ttsEnabled ? <Volume2 size={13} /> : <VolumeX size={13} />}
+          </button>
+
+          <button onClick={onToggleMic} title={mode === "off" ? "Enable listening" : "Disable listening"}
+            className={cn("p-1.5 rounded-input transition-colors",
+              mode !== "off" ? "text-accent-blue" : "text-text-muted hover:text-text-secondary")}>
+            {mode !== "off" ? <Mic size={13} /> : <MicOff size={13} />}
+          </button>
+        </div>
       </div>
+    </div>
+  );
+}
 
-      {/* Controls */}
-      <div className="flex items-center gap-1 flex-none relative">
-        {/* Language picker */}
-        <button onClick={onToggleLang}
-          title={`Voice language: ${LANGUAGES.find((l) => l.code === lang)?.label ?? "Auto"}`}
-          className={cn("p-1.5 rounded-input text-xs transition-colors",
-            showLang ? "text-accent-blue" : "text-text-muted hover:text-text-secondary"
-          )}>
-          <Globe size={12} />
-        </button>
-        {showLang && (
-          <div className="absolute top-8 right-0 bg-background-elevated border border-border-default rounded-card shadow-xl z-50 min-w-[200px] py-1 max-h-64 overflow-y-auto">
-            {LANGUAGES.map((l) => (
-              <button key={l.code} onClick={() => onSelectLang(l.code)}
-                className={cn(
-                  "w-full text-left px-3 py-1.5 text-xs transition-colors",
-                  lang === l.code ? "text-accent-blue bg-accent-blue/10" : "text-text-secondary hover:text-text-primary hover:bg-background-surface"
-                )}>
-                {l.label}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* TTS toggle */}
-        <button onClick={onToggleTTS}
-          title={ttsEnabled ? "Mute JARVIS voice" : "Enable JARVIS voice"}
-          className={cn("p-1.5 rounded-input transition-colors",
-            ttsEnabled ? ttsSpeaking ? "text-accent-violet animate-pulse" : "text-accent-violet" : "text-text-muted hover:text-text-secondary"
-          )}>
-          {ttsEnabled ? <Volume2 size={13} /> : <VolumeX size={13} />}
-        </button>
-
-        {/* Mic on/off */}
-        <button onClick={onToggleMic}
-          title={mode === "off" ? "Enable always-on listening" : "Disable listening"}
-          className={cn("p-1.5 rounded-input transition-colors",
-            mode === "off" ? "text-text-muted hover:text-accent-blue" : "text-accent-blue"
-          )}>
-          {mode === "off" ? <MicOff size={13} /> : <Mic size={13} />}
-        </button>
-      </div>
+function Waveform({ level, active }: { level: number; active: boolean }) {
+  const bars = [0.4, 0.7, 1.0, 0.8, 0.5];
+  return (
+    <div className="flex gap-0.5 items-center h-4 flex-none">
+      {bars.map((mult, i) => {
+        const h = active ? Math.max(3, Math.round(level * mult * 0.14)) : 3;
+        return (
+          <span key={i} className={cn("w-0.5 rounded-full transition-all duration-75",
+            active ? "bg-accent-blue" : "bg-text-muted/40")}
+            style={{ height: `${h}px` }} />
+        );
+      })}
     </div>
   );
 }
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
-function EmptyState({ userName, onSuggest }: { userName?: string; onSuggest: (text: string) => void }) {
+function EmptyState({ userName, supported, onSuggest }: { userName?: string; supported: boolean; onSuggest: (text: string) => void }) {
   return (
     <div className="flex flex-col items-center justify-center h-full min-h-[50vh] gap-8 animate-fade-in">
       <div className="text-center">
@@ -436,11 +447,13 @@ function EmptyState({ userName, onSuggest }: { userName?: string; onSuggest: (te
         <p className="text-text-primary font-semibold text-base mb-1">
           {userName ? `Good to see you, ${userName}.` : "JARVIS is online."}
         </p>
-        <p className="text-text-secondary text-sm">Say "Jarvis" or type below.</p>
+        <p className="text-text-secondary text-sm">
+          {supported ? 'Say "Jarvis" to begin, or type below.' : "Type below to begin."}
+        </p>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full max-w-lg">
         {SUGGESTIONS.map((s) => (
-          <button key={s} onClick={() => onSuggest(s)}
+          <button key={s} onClick={() => onSuggest(s.replace(/^Say "(.+)"$/, "$1").replace(/^Jarvis, /, ""))}
             className="text-left px-4 py-3 rounded-card bg-background-surface border border-border-default hover:border-accent-blue/30 hover:bg-accent-blue/5 transition-all text-sm text-text-secondary hover:text-text-primary">
             {s}
           </button>
@@ -465,13 +478,25 @@ function MessageBubble({ message, session }: { message: Message; session: any })
             ))}
           </div>
         )}
-        <div className={cn(
-          "rounded-card px-4 py-3 text-sm leading-relaxed",
+        <div className={cn("rounded-card px-4 py-3 text-sm leading-relaxed",
           isUser ? "bg-accent-blue/10 border border-accent-blue/20 text-text-primary"
-                 : "bg-background-surface border border-border-default text-text-primary"
-        )}>
+                 : message.error ? "bg-accent-red/5 border border-accent-red/20"
+                 : "bg-background-surface border border-border-default text-text-primary")}>
           {isUser ? (
             <span className="whitespace-pre-wrap">{message.content}</span>
+          ) : message.error ? (
+            <div className="flex items-start gap-2">
+              <AlertCircle size={13} className="text-accent-red flex-none mt-0.5" />
+              <div>
+                <p className="text-accent-red text-sm font-medium">Error</p>
+                <p className="text-accent-red/80 text-xs mt-0.5">{message.error}</p>
+                {message.error.includes("ANTHROPIC_API_KEY") && (
+                  <p className="text-text-muted text-xs mt-2">
+                    Add <code className="font-mono bg-background-elevated px-1 rounded">ANTHROPIC_API_KEY</code> in Vercel → Settings → Environment Variables, then redeploy.
+                  </p>
+                )}
+              </div>
+            </div>
           ) : (
             <>
               {message.content ? (
