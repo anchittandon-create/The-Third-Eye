@@ -130,15 +130,24 @@ export function AssistantClient({ userName }: { userName?: string }) {
     fetch("/api/status").then((r) => r.json()).then(setServiceStatus).catch(() => {});
   }, []);
 
-  // Auto-start mic on mount
+  // Auto-start mic and greet on mount
+  const greetedRef = useRef(false);
   useEffect(() => {
     if (stt.supported) {
       stt.enable();
       setMicOn(true);
     }
+    if (!greetedRef.current && tts.supported) {
+      greetedRef.current = true;
+      const greeting = userName
+        ? `Good to see you, ${userName}. At your service.`
+        : "J.A.R.V.I.S. online. At your service.";
+      // short delay so TTS context is unlocked by the page interaction
+      setTimeout(() => tts.speak(greeting), 600);
+    }
     return () => stt.disable();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stt.supported]);
+  }, [stt.supported, tts.supported]);
 
   useEffect(() => { isStreamingRef.current = isStreaming; }, [isStreaming]);
   useEffect(() => {
