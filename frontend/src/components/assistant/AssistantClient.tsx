@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback, KeyboardEvent } from "react";
 import { useSession } from "next-auth/react";
-import { Send, Cpu, Zap, RotateCcw, Volume2, VolumeX, Mic, MicOff, Globe, AlertCircle } from "lucide-react";
+import { Send, Cpu, Zap, RotateCcw, Volume2, VolumeX, Mic, MicOff, Globe, AlertCircle, Settings } from "lucide-react";
 import { cn } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -64,6 +64,7 @@ export function AssistantClient({ userName }: { userName?: string }) {
   const [apiError, setApiError] = useState<string | null>(null);
   const [liveBubble, setLiveBubble] = useState<LiveBubble | null>(null);
   const [micOn, setMicOn] = useState(false);
+  const [serviceStatus, setServiceStatus] = useState<{ anthropic: boolean; openai: boolean; supabase: boolean } | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -123,6 +124,11 @@ export function AssistantClient({ userName }: { userName?: string }) {
       }, 800);
     }
   }, [tts.speaking]);
+
+  // Check service status on mount
+  useEffect(() => {
+    fetch("/api/status").then((r) => r.json()).then(setServiceStatus).catch(() => {});
+  }, []);
 
   // Auto-start mic on mount
   useEffect(() => {
@@ -347,6 +353,25 @@ export function AssistantClient({ userName }: { userName?: string }) {
           )}
         </div>
       </div>
+
+      {/* Setup required banner */}
+      {serviceStatus && !serviceStatus.anthropic && (
+        <div className="flex-none px-4 sm:px-8 py-3 bg-warning/5 border-b border-warning/20">
+          <div className="flex items-start gap-3">
+            <AlertCircle size={14} className="text-warning flex-none mt-0.5" />
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-warning">JARVIS needs configuration</p>
+              <p className="text-xs text-text-muted mt-0.5">
+                <code className="font-mono bg-background-elevated px-1 rounded">ANTHROPIC_API_KEY</code> is not set.
+                {" "}Go to Vercel → your project → Settings → Environment Variables → add the key → Redeploy.
+              </p>
+            </div>
+            <a href="/settings" className="flex-none text-text-muted hover:text-text-secondary transition-colors p-0.5 rounded">
+              <Settings size={13} />
+            </a>
+          </div>
+        </div>
+      )}
 
       {/* Error banner */}
       {apiError && !apiError.includes("GEMINI_API_KEY") && (

@@ -52,7 +52,7 @@ export default function SignInPage() {
               onError={(e) => {
                 const el = e.target as HTMLImageElement;
                 el.style.display = "none";
-                el.parentElement!.innerHTML = `<div class="w-full h-full flex items-center justify-center text-accent-blue font-bold text-2xl font-display">J</div>`;
+                el.parentElement!.innerHTML = `<div class="w-full h-full flex items-center justify-center text-accent-blue font-bold text-2xl font-display">AJ</div>`;
               }}
             />
           </div>
@@ -60,7 +60,7 @@ export default function SignInPage() {
             JARVIS OS
           </h1>
           <p className="text-text-secondary text-sm mt-2">
-            Your AI-powered personal operating system
+            Your Personal Intelligence Operating System
           </p>
         </div>
 
