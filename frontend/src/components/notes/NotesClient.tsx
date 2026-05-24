@@ -2,7 +2,7 @@
 
 import { useState, useRef, KeyboardEvent } from "react";
 import { useLocalNotes, LocalNote } from "@/hooks/useLocalNotes";
-import { Plus, Trash2, Pin, PinOff, Search, X } from "lucide-react";
+import { Plus, Trash2, Pin, PinOff, Search, X, Download } from "lucide-react";
 import { cn, formatRelativeTime } from "@/lib/utils";
 
 export function NotesClient() {
@@ -39,6 +39,22 @@ export function NotesClient() {
     if (!active) return;
     update(active.id, { title });
     setActive((prev) => prev ? { ...prev, title } : null);
+  }
+
+  function exportNotes() {
+    const md = notes.map((n) => `# ${n.title}\n\n${n.content}\n\n---\n`).join("\n");
+    const blob = new Blob([md], { type: "text/markdown" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+    a.download = `jarvis-notes-${new Date().toISOString().slice(0, 10)}.md`;
+    a.click(); URL.revokeObjectURL(a.href);
+  }
+
+  function downloadNote() {
+    if (!active) return;
+    const blob = new Blob([`# ${active.title}\n\n${active.content}`], { type: "text/markdown" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+    a.download = `${active.title.replace(/[^a-zA-Z0-9]/g, "_")}.md`;
+    a.click(); URL.revokeObjectURL(a.href);
   }
 
   if (!ready) return <div className="flex justify-center py-20"><div className="w-4 h-4 border-2 border-accent-blue/20 border-t-accent-blue rounded-full animate-spin" /></div>;
@@ -85,7 +101,14 @@ export function NotesClient() {
           {rest.map((n) => <NoteRow key={n.id} note={n} active={active?.id === n.id} onClick={() => setActive(n)} onPin={() => update(n.id, { pinned: !n.pinned })} onDelete={() => { remove(n.id); if (active?.id === n.id) setActive(null); }} />)}
         </div>
 
-        <p className="text-[10px] text-text-muted text-center font-mono">{notes.length} notes</p>
+        <div className="flex items-center justify-between">
+          <p className="text-[10px] text-text-muted font-mono">{notes.length} notes</p>
+          {notes.length > 0 && (
+            <button onClick={exportNotes} className="flex items-center gap-1 text-[10px] text-text-muted hover:text-[#4FC3F7] transition-colors font-mono">
+              <Download size={10} /> Export all
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Editor */}
@@ -99,9 +122,12 @@ export function NotesClient() {
                 className="w-full bg-transparent text-text-primary font-semibold text-lg outline-none placeholder:text-text-muted"
                 placeholder="Note title…"
               />
-              <p className="text-text-muted text-xs mt-1 font-mono">
-                {formatRelativeTime(active.updated_at)}
-              </p>
+              <div className="flex items-center gap-2 mt-1">
+                <p className="text-text-muted text-xs font-mono">{formatRelativeTime(active.updated_at)}</p>
+                <button onClick={downloadNote} className="flex items-center gap-1 text-text-muted hover:text-[#4FC3F7] text-xs transition-colors">
+                  <Download size={10} /> Download
+                </button>
+              </div>
             </div>
             <textarea
               ref={textRef}

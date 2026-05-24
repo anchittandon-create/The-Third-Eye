@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Target, Plus, Trash2, ChevronUp, ChevronDown, Check, X } from "lucide-react";
+import { Target, Plus, Trash2, ChevronUp, ChevronDown, Check, X, Download } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useLocalGoals, Goal } from "@/hooks/useLocalGoals";
 
@@ -26,6 +26,19 @@ export function GoalsClient() {
     setForm(emptyForm()); setShowForm(false);
   }
 
+  function exportGoals() {
+    const header = "Title,Category,Current,Target,Unit,Deadline,Description";
+    const rows = goals.map((g) =>
+      [g.title, g.category, g.current, g.target, g.unit, g.deadline ?? "", g.description ?? ""]
+        .map((v) => `"${String(v).replace(/"/g, '""')}"`)
+        .join(",")
+    );
+    const blob = new Blob([[header, ...rows].join("\n")], { type: "text/csv" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+    a.download = `jarvis-goals-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click(); URL.revokeObjectURL(a.href);
+  }
+
   if (!ready) return <div className="flex justify-center py-20"><div className="w-4 h-4 border-2 border-accent-blue/20 border-t-accent-blue rounded-full animate-spin" /></div>;
 
   const byCategory = CATEGORIES.reduce<Record<string, Goal[]>>((acc, cat) => {
@@ -42,11 +55,19 @@ export function GoalsClient() {
           <Stat label="Completed" value={goals.filter((g) => g.current >= g.target).length} color="green" />
           <Stat label="In progress" value={goals.filter((g) => g.current > 0 && g.current < g.target).length} color="blue" />
         </div>
-        <button onClick={() => setShowForm((v) => !v)}
-          className="flex items-center gap-2 px-4 py-2 rounded-input bg-accent-blue text-white text-sm font-medium hover:bg-accent-blue/90 transition-colors">
-          {showForm ? <X size={14} /> : <Plus size={14} />}
-          {showForm ? "Cancel" : "New Goal"}
-        </button>
+        <div className="flex items-center gap-2">
+          {goals.length > 0 && (
+            <button onClick={exportGoals}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-input border border-border-default text-text-muted hover:text-[#4FC3F7] hover:border-[#4FC3F7]/30 text-sm transition-colors">
+              <Download size={13} /> Export
+            </button>
+          )}
+          <button onClick={() => setShowForm((v) => !v)}
+            className="flex items-center gap-2 px-4 py-2 rounded-input bg-accent-blue text-white text-sm font-medium hover:bg-accent-blue/90 transition-colors">
+            {showForm ? <X size={14} /> : <Plus size={14} />}
+            {showForm ? "Cancel" : "New Goal"}
+          </button>
+        </div>
       </div>
 
       {showForm && (
