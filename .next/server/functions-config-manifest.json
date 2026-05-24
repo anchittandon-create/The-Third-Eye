@@ -1,0 +1,1 @@
+{"version":1,"functions":{"/api/chat":{"maxDuration":60},"/dashboard":{},"/api/transcribe":{"maxDuration":30},"/assistant":{},"/finance":{},"/goals":{},"/knowledge":{},"/notes":{},"/settings":{},"/tasks":{},"/privacy_policy":{}}}
