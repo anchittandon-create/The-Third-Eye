@@ -30,6 +30,14 @@ interface HistoryEntry {
   content: string | object[];
 }
 
+const IDLE_TAGLINES = [
+  "All systems online · awaiting your command",
+  "Standing by · just speak or type",
+  "Ready to assist · what's next?",
+  "Listening · I'm here whenever you need me",
+  "Systems nominal · speak freely",
+];
+
 const SUGGESTIONS = [
   "What are my urgent tasks?",
   "Add a task: review Q2 by Friday",
@@ -65,6 +73,9 @@ export function AssistantClient({ userName }: { userName?: string }) {
   const [liveBubble, setLiveBubble] = useState<LiveBubble | null>(null);
   const [micOn, setMicOn] = useState(false);
   const [serviceStatus, setServiceStatus] = useState<{ anthropic: boolean; openai: boolean; supabase: boolean } | null>(null);
+  const [systemOnline, setSystemOnline] = useState(false);
+  const [doneMsg, setDoneMsg] = useState<string | null>(null);
+  const [idleIdx, setIdleIdx] = useState(0);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -125,10 +136,35 @@ export function AssistantClient({ userName }: { userName?: string }) {
     }
   }, [tts.speaking]);
 
-  // Check service status on mount
+  // Check service status on mount; show "all systems online" banner briefly
   useEffect(() => {
-    fetch("/api/status").then((r) => r.json()).then(setServiceStatus).catch(() => {});
+    fetch("/api/status").then((r) => r.json()).then((d) => {
+      setServiceStatus(d);
+      if (d.anthropic) {
+        setSystemOnline(true);
+        setTimeout(() => setSystemOnline(false), 4000);
+      }
+    }).catch(() => {});
   }, []);
+
+  // Rotate idle taglines every 9s when nothing is happening
+  useEffect(() => {
+    if (!micOn || isStreaming || tts.speaking || liveBubble) return;
+    const t = setInterval(() => setIdleIdx((i) => (i + 1) % IDLE_TAGLINES.length), 9000);
+    return () => clearInterval(t);
+  }, [micOn, isStreaming, tts.speaking, liveBubble]);
+
+  // Show a "done" tagline for 3s after each response
+  const prevStreamingRef = useRef(false);
+  useEffect(() => {
+    if (prevStreamingRef.current && !isStreaming && messages.length > 0) {
+      const lines = ["Response delivered · ready for your next command", "Task complete · what's next?", "Done · I'm listening"];
+      setDoneMsg(lines[Math.floor(Math.random() * lines.length)]);
+      const t = setTimeout(() => setDoneMsg(null), 3000);
+      return () => clearTimeout(t);
+    }
+    prevStreamingRef.current = isStreaming;
+  }, [isStreaming, messages.length]);
 
   // Auto-start mic and greet on mount
   const greetedRef = useRef(false);
@@ -313,14 +349,24 @@ export function AssistantClient({ userName }: { userName?: string }) {
             : isStreaming ? "bg-accent-violet animate-pulse"
             : "bg-text-muted"
           )} />
-          <span className="text-xs font-mono text-text-muted">
-            {tts.speaking ? "JARVIS speaking…"
-              : isStreaming ? "JARVIS responding…"
-              : liveBubble?.phase === "transcribing" ? "Recognising…"
-              : liveBubble?.phase === "interim" ? "Listening…"
-              : liveBubble?.phase === "recording" ? "Listening…"
-              : micOn ? "Ready — just speak"
-              : "Mic off"}
+          <span className={cn("text-xs font-mono transition-colors duration-300",
+            systemOnline ? "text-success"
+            : doneMsg ? "text-accent-blue"
+            : tts.speaking ? "text-accent-violet"
+            : isStreaming ? "text-accent-violet"
+            : liveBubble ? "text-accent-blue"
+            : "text-text-muted"
+          )}>
+            {systemOnline ? "JARVIS activated · all systems online"
+              : tts.speaking ? "Speaking · hold on…"
+              : doneMsg ?? (
+                isStreaming ? "Processing · composing response…"
+                : liveBubble?.phase === "transcribing" ? "Got it · thinking…"
+                : liveBubble?.phase === "interim" ? "Listening…"
+                : liveBubble?.phase === "recording" ? "I hear you…"
+                : micOn ? IDLE_TAGLINES[idleIdx]
+                : "Mic off · type to interact"
+              )}
           </span>
           {apiError?.includes("GEMINI_API_KEY") && (
             <span className="text-[10px] font-mono text-accent-red ml-2">· Add GEMINI_API_KEY in Vercel</span>
