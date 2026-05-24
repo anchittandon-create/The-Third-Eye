@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useLocalTasks } from "@/hooks/useLocalTasks";
-import { cn, formatRelativeTime } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import {
   CheckSquare, MessageSquare, Zap, Brain, ArrowRight, Clock,
   Target, FileText, Cpu, Shield, Mic, Globe, TrendingUp, AlertTriangle,
@@ -22,12 +22,12 @@ function useClock() {
   const [date, setDate] = useState("");
   const [seconds, setSeconds] = useState("");
   useEffect(() => {
-    function tick() {
+    const tick = () => {
       const now = new Date();
       setTime(now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false }));
       setSeconds(now.toLocaleTimeString("en-US", { second: "2-digit", hour12: false }).split(":")[2]);
       setDate(now.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" }));
-    }
+    };
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
@@ -58,19 +58,33 @@ export function DashboardClient() {
   const { time, date, seconds } = useClock();
   const uptime = useUptime();
 
-  const open = allTasks.filter((t) => t.status !== "done" && t.status !== "cancelled");
-  const urgent = open.filter((t) => t.priority === "urgent" || t.priority === "high");
+  const open     = allTasks.filter((t) => t.status !== "done" && t.status !== "cancelled");
+  const urgent   = open.filter((t) => t.priority === "urgent" || t.priority === "high");
   const doneToday = allTasks.filter((t) => {
     if (t.status !== "done" || !t.completed_at) return false;
     return new Date(t.completed_at).toDateString() === new Date().toDateString();
   });
-  const overdue = open.filter((t) => {
-    if (!t.due_date) return false;
-    return new Date(t.due_date) < new Date(new Date().toDateString());
-  });
+  const overdue  = open.filter((t) => t.due_date && new Date(t.due_date) < new Date(new Date().toDateString()));
+  const inProgress = open.filter((t) => t.status === "in_progress");
+
+  // Generate AI Insights from available data
+  const insights: string[] = [];
+  if (ready) {
+    if (overdue.length > 0)    insights.push(`${overdue.length} task${overdue.length > 1 ? "s are" : " is"} overdue — review needed.`);
+    if (urgent.length > 0)     insights.push(`${urgent.length} high-priority item${urgent.length > 1 ? "s" : ""} require your attention.`);
+    if (doneToday.length > 0)  insights.push(`${doneToday.length} task${doneToday.length > 1 ? "s" : ""} completed today — good momentum.`);
+    if (inProgress.length > 0) insights.push(`${inProgress.length} task${inProgress.length > 1 ? "s" : ""} currently in progress.`);
+    if (open.length === 0)     insights.push("All clear — no open tasks. Time to plan ahead.");
+    if (insights.length === 0) insights.push("System ready. Ask JARVIS anything to get started.");
+  }
+
+  const topTask = [...open].sort((a, b) => {
+    const order: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
+    return (order[a.priority] ?? 4) - (order[b.priority] ?? 4);
+  })[0];
 
   return (
-    <div className="space-y-4 animate-fade-in">
+    <div className="space-y-5 animate-fade-in">
 
       {/* ── Row 1: HUD Hero + Arc Reactor ────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -248,6 +262,51 @@ export function DashboardClient() {
             sub="Track progress"
           />
         </div>
+
+        {!ready ? (
+          <div className="flex justify-center py-10">
+            <div className="w-4 h-4 border-2 border-accent-blue/20 border-t-accent-blue rounded-full animate-spin" />
+          </div>
+        ) : open.length === 0 ? (
+          <div className="px-5 py-10 text-center">
+            <p className="text-text-muted text-sm">No open tasks.</p>
+            <Link href="/tasks" className="text-accent-blue text-xs hover:underline mt-1 inline-block">Create one →</Link>
+          </div>
+        ) : (
+          <ul className="divide-y divide-border-default">
+            {[...open]
+              .sort((a, b) => {
+                const order: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
+                return (order[a.priority] ?? 4) - (order[b.priority] ?? 4);
+              })
+              .slice(0, 8)
+              .map((t) => {
+                const od = t.due_date && new Date(t.due_date) < new Date(new Date().toDateString());
+                return (
+                  <li key={t.id} className="flex items-center gap-3 px-5 py-3 hover:bg-background-elevated/50 transition-colors">
+                    <span className={cn("w-1.5 h-1.5 rounded-full flex-none", PRIORITY_COLOR[t.priority] ?? "bg-text-muted")} />
+                    <span className="flex-1 text-sm text-text-primary truncate">{t.title}</span>
+                    {t.assignee && (
+                      <span className="text-text-muted text-xs hidden sm:block">{t.assignee}</span>
+                    )}
+                    {t.due_date && (
+                      <span className={cn("text-xs flex-none font-mono", od ? "text-accent-red" : "text-text-muted")}>
+                        {od ? "overdue" : new Date(t.due_date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                      </span>
+                    )}
+                    <span className={cn(
+                      "hidden md:inline text-[10px] font-mono px-1.5 py-0.5 rounded border",
+                      t.status === "in_progress"
+                        ? "text-accent-blue border-accent-blue/20 bg-accent-blue/5"
+                        : "text-text-muted border-border-default"
+                    )}>
+                      {t.status === "in_progress" ? "In progress" : "To do"}
+                    </span>
+                  </li>
+                );
+              })}
+          </ul>
+        )}
       </div>
 
       {/* ── Row 3: Capabilities ──────────────────────────────── */}
@@ -303,7 +362,7 @@ function HUDStat({ icon, label, value, alert }: { icon: React.ReactNode; label: 
   );
 }
 
-function SystemLine({ icon, label, value, status }: {
+function StatusRow({ icon, label, value, status }: {
   icon: React.ReactNode; label: string; value: string; status: "online" | "idle" | "pending";
 }) {
   const dotCls = {

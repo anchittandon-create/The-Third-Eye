@@ -4,17 +4,9 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { signOut, useSession } from "next-auth/react";
 import {
-  LayoutDashboard,
-  MessageSquare,
-  CheckSquare,
-  BookOpen,
-  BarChart2,
-  Settings,
-  LogOut,
-  PanelLeftClose,
-  PanelLeftOpen,
-  FileText,
-  Target,
+  LayoutDashboard, MessageSquare, CheckSquare, BookOpen,
+  BarChart2, Settings, LogOut, PanelLeftClose, PanelLeftOpen,
+  FileText, Target,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
@@ -49,6 +41,7 @@ export function Sidebar() {
         <div className="arc-reactor flex-none" style={{ width: 32, height: 32 }}>
           <div className="arc-reactor-core" style={{ width: 8, height: 8 }} />
         </div>
+
         {!collapsed && (
           <div className="flex-1 min-w-0">
             <div className="font-display font-semibold text-text-primary tracking-tight leading-none gradient-text-arc">
@@ -57,24 +50,21 @@ export function Sidebar() {
             <div className="text-[10px] font-mono text-text-muted mt-0.5 tracking-wider">v0.1.0 · ONLINE</div>
           </div>
         )}
+
         {!collapsed && (
-          <button
-            onClick={() => setCollapsed(true)}
+          <button onClick={() => setCollapsed(true)}
             className="text-text-muted hover:text-text-primary transition-colors p-1 rounded"
-            title="Collapse sidebar"
-          >
-            <PanelLeftClose size={15} />
+            title="Collapse">
+            <PanelLeftClose size={14} />
           </button>
         )}
       </div>
 
       {collapsed && (
-        <button
-          onClick={() => setCollapsed(false)}
+        <button onClick={() => setCollapsed(false)}
           className="mx-auto mt-3 p-1.5 text-text-muted hover:text-text-primary hover:bg-background-elevated rounded transition-colors"
-          title="Expand sidebar"
-        >
-          <PanelLeftOpen size={15} />
+          title="Expand">
+          <PanelLeftOpen size={14} />
         </button>
       )}
 
@@ -83,10 +73,7 @@ export function Sidebar() {
         {NAV_ITEMS.map(({ label, href, icon: Icon }) => {
           const isActive = pathname.startsWith(href);
           return (
-            <Link
-              key={href}
-              href={href}
-              title={collapsed ? label : undefined}
+            <Link key={href} href={href} title={collapsed ? label : undefined}
               className={cn(
                 "flex items-center gap-3 rounded-input text-sm transition-all duration-150 relative",
                 collapsed ? "justify-center px-2 py-3" : "px-3 py-2.5",
@@ -105,13 +92,11 @@ export function Sidebar() {
         })}
       </nav>
 
-      {/* Bottom */}
+      {/* Footer */}
       <div className="border-t border-border-default px-2 py-3 space-y-0.5 flex-none">
-        <Link
-          href="/settings"
-          title={collapsed ? "Settings" : undefined}
+        <Link href="/settings" title={collapsed ? "Settings" : undefined}
           className={cn(
-            "flex items-center gap-3 rounded-input text-sm text-text-secondary hover:text-text-primary hover:bg-background-elevated transition-colors",
+            "flex items-center gap-3 rounded-input text-sm text-text-secondary hover:text-text-primary hover:bg-background-elevated transition-all border border-transparent",
             collapsed ? "justify-center px-2 py-3" : "px-3 py-2.5"
           )}
         >
@@ -140,11 +125,9 @@ export function Sidebar() {
                 <span className="text-text-secondary text-xs truncate flex-1 font-mono">
                   {session.user.name?.split(" ")[0] ?? session.user.email}
                 </span>
-                <button
-                  onClick={() => signOut({ callbackUrl: "/auth/signin" })}
+                <button onClick={() => signOut({ callbackUrl: "/auth/signin" })}
                   className="text-text-muted hover:text-accent-red transition-colors p-0.5"
-                  title="Sign out"
-                >
+                  title="Sign out">
                   <LogOut size={13} />
                 </button>
               </>
