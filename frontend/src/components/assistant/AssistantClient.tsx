@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback, KeyboardEvent } from "react";
 import { useSession } from "next-auth/react";
-import { Send, Cpu, Zap, RotateCcw, Volume2, VolumeX, Mic, MicOff, Globe, AlertCircle, Paperclip, X, FileText } from "lucide-react";
+import { Send, Cpu, Zap, RotateCcw, Volume2, VolumeX, Mic, MicOff, Globe, AlertCircle, Paperclip, X, FileText, History, Plus, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -10,6 +10,7 @@ import { useVoiceSTT, useTTS } from "@/hooks/useVoice";
 import { useLocalTasks } from "@/hooks/useLocalTasks";
 import { useLocalKnowledge } from "@/hooks/useLocalKnowledge";
 import { useAgentProfile } from "@/hooks/useAgentProfile";
+import { useChatHistory } from "@/hooks/useChatHistory";
 
 interface Message {
   id: string;
@@ -87,6 +88,7 @@ export function AssistantClient({ userName }: { userName?: string }) {
   const abortRef = useRef<AbortController | null>(null);
   const isStreamingRef = useRef(false);
   const sendRef = useRef<(text?: string) => Promise<void>>(async () => {});
+  const sessionIdRef = useRef<string | null>(null);
 
   const suppressRef = useRef(false);
   const cooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -95,6 +97,8 @@ export function AssistantClient({ userName }: { userName?: string }) {
   const { docs } = useLocalKnowledge();
   const { active: agent } = useAgentProfile();
   const tts = useTTS(agent.voicePreference);
+  const chatHistory = useChatHistory();
+  const [showHistory, setShowHistory] = useState(false);
 
   const stt = useVoiceSTT({
     lang,
@@ -166,6 +170,14 @@ export function AssistantClient({ userName }: { userName?: string }) {
     }]);
     setIsStreaming(true);
     abortRef.current = new AbortController();
+
+    // Save to chat history
+    if (!sessionIdRef.current) {
+      const s = chatHistory.createSession(agent.id);
+      sessionIdRef.current = s.id;
+    }
+    chatHistory.addMessage(sessionIdRef.current, { ...userMsg, timestamp: new Date().toISOString() });
+    chatHistory.addMessage(sessionIdRef.current, { id: assistantId, role: "assistant", content: "", timestamp: new Date().toISOString() });
 
     try {
       const readyDocs = docs.filter((d) => d.processing_status === "ready")
@@ -249,7 +261,21 @@ export function AssistantClient({ userName }: { userName?: string }) {
                       notes.unshift({ id: crypto.randomUUID(), title: fx.data.title, content: fx.data.content, pinned: false, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
                       localStorage.setItem("jarvis_notes_v1", JSON.stringify(notes));
                     }
+                    if (fx.type === "reminder_set" && fx.data?.message) {
+                      const mins = fx.data.minutes ?? 10;
+                      if ("Notification" in window && Notification.permission !== "granted") Notification.requestPermission();
+                      setTimeout(() => {
+                        if ("Notification" in window && Notification.permission === "granted") {
+                          new Notification(`${agent.name} Reminder`, { body: fx.data.message, icon: "/logo.png" });
+                        }
+                        tts.speak(`Reminder: ${fx.data.message}`);
+                      }, mins * 60 * 1000);
+                    }
                   }
+                }
+                // Save to chat history
+                if (sessionIdRef.current) {
+                  chatHistory.updateLastAssistantMessage(sessionIdRef.current, fullText, toolsUsed);
                 }
                 tts.speak(fullText);
               }
@@ -272,7 +298,7 @@ export function AssistantClient({ userName }: { userName?: string }) {
     } finally {
       setIsStreaming(false);
     }
-  }, [input, session, userName, allTasks, docs, createTask, tts, attachedFiles, agent]);
+  }, [input, session, userName, allTasks, docs, createTask, tts, attachedFiles, agent, chatHistory]);
 
   useEffect(() => { sendRef.current = sendMessage; }, [sendMessage]);
 
@@ -285,7 +311,24 @@ export function AssistantClient({ userName }: { userName?: string }) {
     tts.stop();
     setMessages([]); setLiveBubble(null); setApiError(null); setAttachedFiles([]);
     historyRef.current = []; memoryRef.current = {};
+    sessionIdRef.current = null;
     setIsStreaming(false);
+  }
+
+  function loadSession(sessionId: string) {
+    const session = chatHistory.sessions.find((s) => s.id === sessionId);
+    if (!session) return;
+    handleClear();
+    sessionIdRef.current = sessionId;
+    chatHistory.setActiveSessionId(sessionId);
+    const restored: Message[] = session.messages.map((m) => ({
+      id: m.id, role: m.role, content: m.content,
+      toolsUsed: m.toolsUsed, attachments: m.attachments,
+    }));
+    setMessages(restored);
+    historyRef.current = session.messages
+      .filter((m) => m.content)
+      .map((m) => ({ role: m.role, content: m.content }));
   }
 
   function toggleMic() {
@@ -361,14 +404,53 @@ export function AssistantClient({ userName }: { userName?: string }) {
               {micOn ? <Mic size={13} /> : <MicOff size={13} />}
             </button>
           )}
+          <button onClick={() => setShowHistory((v) => !v)} title="Chat history"
+            className={cn("p-1.5 rounded-input transition-colors",
+              showHistory ? "text-[#4FC3F7]" : "text-text-muted hover:text-text-secondary")}>
+            <History size={13} />
+          </button>
           {messages.length > 0 && (
-            <button onClick={handleClear} title="Clear"
+            <button onClick={handleClear} title="New chat"
               className="p-1.5 rounded-input text-text-muted hover:text-text-secondary transition-colors">
-              <RotateCcw size={13} />
+              <Plus size={13} />
             </button>
           )}
         </div>
       </div>
+
+      {/* Chat history sidebar */}
+      {showHistory && (
+        <div className="flex-none w-full border-b border-[rgba(79,195,247,0.08)] bg-background-surface/50 px-4 sm:px-8 py-3 max-h-48 overflow-y-auto">
+          <div className="flex items-center justify-between mb-2">
+            <span className="hud-label text-[#4FC3F7] text-[9px]">Conversation History</span>
+            {chatHistory.sessions.length > 0 && (
+              <button onClick={() => { chatHistory.clearAll(); setShowHistory(false); }}
+                className="text-text-muted hover:text-accent-red text-[10px] font-mono transition-colors">Clear all</button>
+            )}
+          </div>
+          {chatHistory.sessions.length === 0 ? (
+            <p className="text-text-muted text-xs">No previous conversations.</p>
+          ) : (
+            <div className="space-y-1">
+              {chatHistory.sessions.slice(0, 20).map((s) => (
+                <div key={s.id} className={cn(
+                  "flex items-center gap-2 px-3 py-2 rounded-input cursor-pointer transition-colors group",
+                  sessionIdRef.current === s.id ? "bg-[#4FC3F7]/8 border border-[#4FC3F7]/15" : "hover:bg-background-elevated border border-transparent"
+                )} onClick={() => { loadSession(s.id); setShowHistory(false); }}>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-text-primary truncate">{s.title}</p>
+                    <p className="text-[10px] text-text-muted font-mono">{s.messages.length} msgs · {new Date(s.updated_at).toLocaleDateString()}</p>
+                  </div>
+                  <button onClick={(e) => { e.stopPropagation(); chatHistory.deleteSession(s.id); }}
+                    className="text-text-muted hover:text-accent-red opacity-0 group-hover:opacity-100 transition-all flex-none">
+                    <Trash2 size={10} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Error banner */}
       {apiError && !apiError.includes("GEMINI_API_KEY") && (

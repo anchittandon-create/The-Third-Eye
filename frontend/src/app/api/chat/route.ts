@@ -35,7 +35,11 @@ const SYSTEM_PROMPT = `You are the user's personal AI assistant running on The T
 - **search_tasks**: when the user asks about their tasks, workload, or wants a summary
 - **create_note**: when the user wants to jot something down, save an idea, or capture content
 - **search_knowledge**: search user's uploaded documents — always search before saying you don't know
-- **web_search**: search the web for current information, news, answers, research. Use this for ANY question about facts, current events, how-to, prices, comparisons, etc.
+- **web_search**: search the web for current information, news, answers, research. Use for ANY factual question.
+- **calculate**: math expressions, unit conversions, currency, percentages — use for ANY math question
+- **get_weather**: current weather and forecast for any city
+- **set_reminder**: create a timed reminder that triggers a browser notification
+- **daily_briefing**: generate a morning briefing with date, tasks summary, weather, and a motivational quote
 
 ## Task creation guidelines
 - If the user says "add X to my tasks", "remind me to X" → call create_task immediately
@@ -139,12 +143,88 @@ const geminiTools = [
           required: ["query"],
         },
       },
+      {
+        name: "calculate",
+        description: "Evaluate a math expression or perform conversions. Use for any math, percentages, unit conversions, tip calculations, etc. Supports standard JS math operators.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            expression: { type: "STRING", description: "Math expression to evaluate, e.g. '(15 * 1.18) + 500', '72 * 1.60934', 'Math.sqrt(144)'" },
+          },
+          required: ["expression"],
+        },
+      },
+      {
+        name: "get_weather",
+        description: "Get current weather and forecast for a location. Use when user asks about weather, temperature, rain, etc.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            city: { type: "STRING", description: "City name, e.g. 'New Delhi', 'London'" },
+          },
+          required: ["city"],
+        },
+      },
+      {
+        name: "set_reminder",
+        description: "Set a timed reminder. The user will get a browser notification after the specified minutes.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            message: { type: "STRING", description: "Reminder message" },
+            minutes: { type: "STRING", description: "Minutes from now, e.g. '30', '60', '5'" },
+          },
+          required: ["message", "minutes"],
+        },
+      },
+      {
+        name: "daily_briefing",
+        description: "Generate a comprehensive daily briefing including date/time, task summary, and motivational content. Use when user says 'good morning', 'brief me', 'what's my day look like', 'daily update'.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            timezone: { type: "STRING", description: "IANA timezone" },
+          },
+        },
+      },
     ],
   },
 ] as any;
 
 interface TaskData { title: string; priority?: string; assignee?: string; due_date?: string; description?: string; }
 interface NoteData { title: string; content: string; }
+
+async function getWeather(city: string): Promise<string> {
+  const key = process.env.OPENWEATHER_API_KEY;
+  if (!key) {
+    return `[Weather API unavailable — OPENWEATHER_API_KEY not set. Use web_search as fallback to find weather for "${city}".]`;
+  }
+  try {
+    const res = await fetch(`https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=${key}&units=metric`);
+    if (!res.ok) return `[Weather error: city "${city}" not found]`;
+    const d = await res.json();
+    const forecast = await fetch(`https://api.openweathermap.org/data/2.5/forecast?q=${encodeURIComponent(city)}&appid=${key}&units=metric&cnt=8`);
+    let forecastStr = "";
+    if (forecast.ok) {
+      const fd = await forecast.json();
+      forecastStr = fd.list?.slice(0, 4).map((f: any) =>
+        `${new Date(f.dt * 1000).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}: ${f.main.temp}°C, ${f.weather[0].description}`
+      ).join("\n") ?? "";
+    }
+    return JSON.stringify({
+      city: d.name,
+      country: d.sys?.country,
+      temp: `${d.main.temp}°C`,
+      feels_like: `${d.main.feels_like}°C`,
+      description: d.weather[0]?.description,
+      humidity: `${d.main.humidity}%`,
+      wind: `${d.wind.speed} m/s`,
+      forecast: forecastStr || "Forecast unavailable",
+    });
+  } catch (err) {
+    return `[Weather fetch failed: ${err instanceof Error ? err.message : "unknown"}]`;
+  }
+}
 
 function simpleSearch(docs: Array<{ id: string; title: string; content: string }>, query: string, topK = 4): string {
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
@@ -251,6 +331,61 @@ function runTool(
 
   if (name === "web_search") {
     return { result: "", async: true };
+  }
+
+  if (name === "calculate") {
+    try {
+      const expr = (input.expression ?? "").replace(/[^0-9+\-*/().,%\s^Math.a-z]/gi, "");
+      const result = new Function(`"use strict"; return (${expr})`)();
+      return { result: JSON.stringify({ expression: input.expression, result: String(result) }) };
+    } catch (e) {
+      return { result: `Calculation error: ${e instanceof Error ? e.message : "invalid expression"}` };
+    }
+  }
+
+  if (name === "get_weather") {
+    return { result: "", async: true };
+  }
+
+  if (name === "set_reminder") {
+    const mins = parseInt(input.minutes ?? "10", 10);
+    return {
+      result: JSON.stringify({ success: true, message: input.message, minutes: mins }),
+      sideEffect: { type: "reminder_set", data: { message: input.message, minutes: mins } },
+    };
+  }
+
+  if (name === "daily_briefing") {
+    const tz = input?.timezone ?? "UTC";
+    const now = new Date();
+    let formatted: string;
+    try {
+      formatted = new Intl.DateTimeFormat("en-US", {
+        timeZone: tz, weekday: "long", year: "numeric", month: "long",
+        day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short",
+      }).format(now);
+    } catch { formatted = now.toString(); }
+
+    const open = tasks.filter((t) => t.status !== "done" && t.status !== "cancelled");
+    const urgent = open.filter((t) => t.priority === "urgent" || t.priority === "high");
+    const overdue = open.filter((t) => t.due_date && new Date(t.due_date) < new Date(now.toDateString()) && t.status !== "done");
+    const dueToday = open.filter((t) => t.due_date && new Date(t.due_date).toDateString() === now.toDateString());
+
+    const taskSummary = open.slice(0, 10).map((t: any) =>
+      `- [${t.priority}] ${t.title}${t.due_date ? ` · due ${t.due_date}` : ""} · ${t.status}`
+    ).join("\n");
+
+    return {
+      result: JSON.stringify({
+        datetime: formatted,
+        tasks_open: open.length,
+        tasks_urgent: urgent.length,
+        tasks_overdue: overdue.length,
+        tasks_due_today: dueToday.length,
+        task_list: taskSummary || "No tasks.",
+        docs_count: docs.length,
+      }),
+    };
   }
 
   return { result: `Unknown tool: ${name}` };
@@ -391,6 +526,8 @@ export async function POST(req: NextRequest) {
               let resultStr = toolResult.result;
               if (fc.name === "web_search") {
                 resultStr = await webSearch(fc.args?.query ?? "");
+              } else if (fc.name === "get_weather") {
+                resultStr = await getWeather(fc.args?.city ?? "");
               }
 
               toolResponseParts.push({
