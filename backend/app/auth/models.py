@@ -83,5 +83,5 @@ class AuditLog(Base):
     input_hash: Mapped[Optional[str]] = mapped_column(String(64))
     output_hash: Mapped[Optional[str]] = mapped_column(String(64))
     duration_ms: Mapped[Optional[int]] = mapped_column(Integer)
-    metadata: Mapped[Optional[str]] = mapped_column(Text)
+    metadata_json: Mapped[Optional[str]] = mapped_column("metadata", Text)
     # AuditLog is append-only; no update is ever issued on this table

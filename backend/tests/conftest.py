@@ -7,6 +7,12 @@
 
 import os
 os.environ.setdefault("ENVIRONMENT", "test")
+os.environ.setdefault("SECRET_KEY", "test-secret-key-with-at-least-32-chars")
+os.environ.setdefault("FINANCIAL_ENCRYPTION_KEY", "test-financial-key-with-32-characters")
+os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
+os.environ.setdefault("NEXTAUTH_SECRET", "test-nextauth-secret-with-32-chars")
+os.environ.setdefault("GOOGLE_AI_API_KEY", "test-google-ai-key")
 
 # ─── pgvector compatibility shim for SQLite ───────────────────────────────────
 import pgvector.sqlalchemy
