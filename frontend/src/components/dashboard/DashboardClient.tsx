@@ -14,6 +14,7 @@ import Link from "next/link";
 const PRIORITY_DOT: Record<string, string> = {
   low: "bg-text-muted", medium: "bg-[#4FC3F7]", high: "bg-warning", urgent: "bg-accent-red",
 };
+const PRIORITY_COLOR = PRIORITY_DOT;
 const PRIORITY_RING: Record<string, string> = {
   low: "border-text-muted/20", medium: "border-[#4FC3F7]/30", high: "border-warning/30", urgent: "border-accent-red/40",
 };
@@ -392,6 +393,20 @@ function QuickCard({ href, icon, label, sub, glow }: {
       </div>
       <ArrowRight size={13} className="ml-auto text-text-muted flex-none" />
     </Link>
+  );
+}
+
+function SystemLine({ icon, label, value, status }: {
+  icon: React.ReactNode; label: string; value: string; status: "online" | "idle" | "pending";
+}) {
+  const dot = status === "online" ? "bg-[#4FC3F7] animate-pulse" : status === "idle" ? "bg-success" : "bg-warning";
+  return (
+    <div className="flex items-center gap-2 text-[11px] font-mono">
+      <span className="text-[#4FC3F7]/60 flex-none">{icon}</span>
+      <span className="text-text-muted flex-1">{label}</span>
+      <span className="text-text-secondary">{value}</span>
+      <span className={cn("w-1.5 h-1.5 rounded-full flex-none", dot)} />
+    </div>
   );
 }
 

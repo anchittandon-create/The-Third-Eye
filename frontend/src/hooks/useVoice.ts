@@ -192,10 +192,24 @@ export function useTTS(voicePreference?: string) {
   useEffect(() => {
     const ok = typeof window !== "undefined" && "speechSynthesis" in window;
     setSupported(ok);
-    if (ok) {
-      window.speechSynthesis.getVoices();
-      window.speechSynthesis.addEventListener("voiceschanged", () => window.speechSynthesis.getVoices());
-    }
+    if (!ok) return;
+    window.speechSynthesis.getVoices();
+    window.speechSynthesis.addEventListener("voiceschanged", () => window.speechSynthesis.getVoices());
+
+    // iOS Safari requires a user gesture before speechSynthesis will work.
+    // Unlock it silently on the first interaction.
+    const unlock = () => {
+      const u = new SpeechSynthesisUtterance("");
+      u.volume = 0;
+      window.speechSynthesis.speak(u);
+      window.speechSynthesis.cancel();
+    };
+    window.addEventListener("click", unlock, { once: true });
+    window.addEventListener("touchstart", unlock, { once: true });
+    return () => {
+      window.removeEventListener("click", unlock);
+      window.removeEventListener("touchstart", unlock);
+    };
   }, []);
 
   useEffect(() => {

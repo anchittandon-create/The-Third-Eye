@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback, KeyboardEvent } from "react";
 import { useSession } from "next-auth/react";
+import { Send, Cpu, Zap, RotateCcw, Volume2, VolumeX, Mic, MicOff, Globe, AlertCircle, Settings } from "lucide-react";
 import { Send, Cpu, Zap, RotateCcw, Volume2, VolumeX, Mic, MicOff, Globe, AlertCircle, Paperclip, X, FileText, History, Plus, Trash2, Ear } from "lucide-react";
 import { cn } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
@@ -10,6 +11,8 @@ import { useVoiceSTT, useTTS } from "@/hooks/useVoice";
 import { useWakeWord } from "@/hooks/useWakeWord";
 import { useLocalTasks } from "@/hooks/useLocalTasks";
 import { useLocalKnowledge } from "@/hooks/useLocalKnowledge";
+import { useLocalNotes } from "@/hooks/useLocalNotes";
+import { useLocalGoals } from "@/hooks/useLocalGoals";
 import { useAgentProfile } from "@/hooks/useAgentProfile";
 import { useChatHistory } from "@/hooks/useChatHistory";
 import { useConsent, getCurrentLocation } from "@/hooks/useConsent";
@@ -35,6 +38,14 @@ interface AttachedFile {
   content: string;
   size: number;
 }
+
+const IDLE_TAGLINES = [
+  "All systems online · awaiting your command",
+  "Standing by · just speak or type",
+  "Ready to assist · what's next?",
+  "Listening · I'm here whenever you need me",
+  "Systems nominal · speak freely",
+];
 
 const SUGGESTIONS = [
   "What are my urgent tasks?",
@@ -79,6 +90,10 @@ export function AssistantClient({ userName }: { userName?: string }) {
   const [apiError, setApiError] = useState<string | null>(null);
   const [liveBubble, setLiveBubble] = useState<LiveBubble | null>(null);
   const [micOn, setMicOn] = useState(false);
+  const [serviceStatus, setServiceStatus] = useState<{ ai: boolean; openai: boolean; supabase: boolean; serper: boolean } | null>(null);
+  const [systemOnline, setSystemOnline] = useState(false);
+  const [doneMsg, setDoneMsg] = useState<string | null>(null);
+  const [idleIdx, setIdleIdx] = useState(0);
   const [wakeEnabled, setWakeEnabled] = useState(() => {
     if (typeof window === "undefined") return true;
     const v = localStorage.getItem("te_wake_enabled");
@@ -100,8 +115,11 @@ export function AssistantClient({ userName }: { userName?: string }) {
   const suppressRef = useRef(false);
   const cooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const { allTasks, create: createTask } = useLocalTasks();
+  const { allTasks, create: createTask, update: updateTask } = useLocalTasks();
   const { docs } = useLocalKnowledge();
+  const { notes } = useLocalNotes();
+  const { goals, add: addGoal, adjust: adjustGoal } = useLocalGoals();
+  const tts = useTTS();
   const { active: agent } = useAgentProfile();
   const tts = useTTS(agent.voicePreference);
   const chatHistory = useChatHistory();
@@ -146,11 +164,86 @@ export function AssistantClient({ userName }: { userName?: string }) {
     }
   }, [tts.speaking]);
 
+  // Persistent memory: load from localStorage on session ready
+  useEffect(() => {
+    const email = session?.user?.email;
+    if (!email) return;
+    const key = `jarvis_memory_v1_${email}`;
+    try {
+      const saved = JSON.parse(localStorage.getItem(key) ?? "{}");
+      if (Object.keys(saved).length > 0) memoryRef.current = { ...saved, ...memoryRef.current };
+    } catch {}
+  }, [session?.user?.email]);
+
+  // Check service status on mount; show "all systems online" banner briefly
+  useEffect(() => {
+    fetch("/api/status").then((r) => r.json()).then((d) => {
+      setServiceStatus(d);
+      if (d.ai) {
+        setSystemOnline(true);
+        setTimeout(() => setSystemOnline(false), 4000);
+      }
+    }).catch(() => {});
+  }, []);
+
+  // Rotate idle taglines every 9s when nothing is happening
+  useEffect(() => {
+    if (!micOn || isStreaming || tts.speaking || liveBubble) return;
+    const t = setInterval(() => setIdleIdx((i) => (i + 1) % IDLE_TAGLINES.length), 9000);
+    return () => clearInterval(t);
+  }, [micOn, isStreaming, tts.speaking, liveBubble]);
+
+  // Proactive morning briefing (6am–10am, once per day)
+  const briefingFiredRef = useRef(false);
+  useEffect(() => {
+    if (briefingFiredRef.current || !serviceStatus?.ai || messages.length > 0) return;
+    const hour = new Date().getHours();
+    if (hour < 6 || hour >= 11) return;
+    const today = new Date().toDateString();
+    const email = session?.user?.email ?? "anon";
+    const lastBriefing = localStorage.getItem(`jarvis_briefing_${email}`);
+    if (lastBriefing === today) return;
+    briefingFiredRef.current = true;
+    localStorage.setItem(`jarvis_briefing_${email}`, today);
+    setTimeout(() => {
+      if (!isStreamingRef.current) {
+        sendRef.current("Morning briefing: summarise my tasks, any overdue items, goals progress, and top priorities for today. Keep it sharp.");
+      }
+    }, 2500);
+  }, [serviceStatus, messages.length, session?.user?.email]);
+
+  // Show a "done" tagline for 3s after each response
+  const prevStreamingRef = useRef(false);
+  useEffect(() => {
+    if (prevStreamingRef.current && !isStreaming && messages.length > 0) {
+      const lines = ["Response delivered · ready for your next command", "Task complete · what's next?", "Done · I'm listening"];
+      setDoneMsg(lines[Math.floor(Math.random() * lines.length)]);
+      const t = setTimeout(() => setDoneMsg(null), 3000);
+      return () => clearTimeout(t);
+    }
+    prevStreamingRef.current = isStreaming;
+  }, [isStreaming, messages.length]);
+
+  // Auto-start mic and greet on mount
+  const greetedRef = useRef(false);
+  useEffect(() => {
+    if (stt.supported) {
+      stt.enable();
+      setMicOn(true);
+    }
+    if (!greetedRef.current && tts.supported) {
+      greetedRef.current = true;
+      const greeting = userName
+        ? `Good to see you, ${userName}. At your service.`
+        : "J.A.R.V.I.S. online. At your service.";
+      // short delay so TTS context is unlocked by the page interaction
+      setTimeout(() => tts.speak(greeting), 600);
+    }
   useEffect(() => {
     if (stt.supported) { stt.enable(); setMicOn(true); }
     return () => stt.disable();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stt.supported]);
+  }, [stt.supported, tts.supported]);
 
   useEffect(() => { isStreamingRef.current = isStreaming; }, [isStreaming]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, liveBubble]);
@@ -207,6 +300,12 @@ export function AssistantClient({ userName }: { userName?: string }) {
           history: historyRef.current,
           memory: memoryRef.current,
           userName: userName ?? session?.user?.name?.split(" ")[0],
+          email: session?.user?.email ?? undefined,
+          tasks: allTasks,
+          docs: readyDocs,
+          goals,
+          notes: notes.map((n) => ({ id: n.id, title: n.title, content: n.content })),
+          accessToken: (session as any)?.accessToken ?? undefined,
           userEmail: session?.user?.email,
           agentName: agent.name,
           agentPersonality: agent.personality,
@@ -262,7 +361,14 @@ export function AssistantClient({ userName }: { userName?: string }) {
                 setApiError(errMsg);
                 return;
               } else if (eventType === "done") {
-                if (parsed.memory) memoryRef.current = parsed.memory;
+                if (parsed.memory) {
+                  memoryRef.current = parsed.memory;
+                  // Persist memory to localStorage keyed by user email
+                  const email = session?.user?.email;
+                  if (email) {
+                    localStorage.setItem(`jarvis_memory_v1_${email}`, JSON.stringify(parsed.memory));
+                  }
+                }
                 historyRef.current = [
                   ...historyRef.current,
                   { role: "user", content: msg },
@@ -273,10 +379,19 @@ export function AssistantClient({ userName }: { userName?: string }) {
                     if (fx.type === "task_create" && fx.data?.title) {
                       createTask({ title: fx.data.title, priority: fx.data.priority ?? "medium", status: "todo", assignee: fx.data.assignee, due_date: fx.data.due_date, description: fx.data.description });
                     }
+                    if (fx.type === "task_update" && fx.data?.id) {
+                      updateTask(fx.data.id, fx.data.patch ?? {});
+                    }
                     if (fx.type === "note_create" && fx.data?.title) {
-                      const notes = JSON.parse(localStorage.getItem("jarvis_notes_v1") ?? "[]");
-                      notes.unshift({ id: crypto.randomUUID(), title: fx.data.title, content: fx.data.content, pinned: false, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
-                      localStorage.setItem("jarvis_notes_v1", JSON.stringify(notes));
+                      const savedNotes = JSON.parse(localStorage.getItem("jarvis_notes_v1") ?? "[]");
+                      savedNotes.unshift({ id: crypto.randomUUID(), title: fx.data.title, content: fx.data.content, pinned: false, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+                      localStorage.setItem("jarvis_notes_v1", JSON.stringify(savedNotes));
+                    }
+                    if (fx.type === "goal_create" && fx.data?.title) {
+                      addGoal({ title: fx.data.title, category: fx.data.category ?? "Personal", target: fx.data.target ?? 100, current: fx.data.current ?? 0, unit: fx.data.unit ?? "%", deadline: fx.data.deadline, description: fx.data.description });
+                    }
+                    if (fx.type === "goal_update" && fx.data?.id) {
+                      if (fx.data.delta !== undefined) adjustGoal(fx.data.id, fx.data.delta);
                     }
                     if (fx.type === "reminder_set" && fx.data?.message) {
                       const mins = fx.data.minutes ?? 10;
@@ -401,6 +516,33 @@ export function AssistantClient({ userName }: { userName?: string }) {
       {/* Top bar */}
       <div className="flex-none flex items-center justify-between px-4 sm:px-8 py-2 border-b border-[rgba(79,195,247,0.08)] bg-background-surface">
         <div className="flex items-center gap-2">
+          <span className={cn("w-1.5 h-1.5 rounded-full",
+            tts.speaking ? "bg-accent-violet animate-pulse"
+            : suppressRef.current ? "bg-warning animate-pulse"
+            : liveBubble?.phase === "recording" || liveBubble?.phase === "interim" ? "bg-accent-blue animate-pulse"
+            : micOn && !isStreaming ? "bg-success animate-pulse"
+            : isStreaming ? "bg-accent-violet animate-pulse"
+            : "bg-text-muted"
+          )} />
+          <span className={cn("text-xs font-mono transition-colors duration-300",
+            systemOnline ? "text-success"
+            : doneMsg ? "text-accent-blue"
+            : tts.speaking ? "text-accent-violet"
+            : isStreaming ? "text-accent-violet"
+            : liveBubble ? "text-accent-blue"
+            : "text-text-muted"
+          )}>
+            {systemOnline ? "JARVIS activated · all systems online"
+              : tts.speaking ? "Speaking · hold on…"
+              : doneMsg ?? (
+                isStreaming ? "Processing · composing response…"
+                : liveBubble?.phase === "transcribing" ? "Got it · thinking…"
+                : liveBubble?.phase === "interim" ? "Listening…"
+                : liveBubble?.phase === "recording" ? "I hear you…"
+                : micOn ? IDLE_TAGLINES[idleIdx]
+                : "Mic off · type to interact"
+              )}
+          </span>
           <div className="arc-reactor flex-none" style={{ width: 20, height: 20 }}>
             <div className="arc-reactor-core" style={{ width: 5, height: 5 }} />
           </div>
@@ -463,6 +605,22 @@ export function AssistantClient({ userName }: { userName?: string }) {
         </div>
       </div>
 
+      {/* Setup required banner */}
+      {serviceStatus && !serviceStatus.ai && (
+        <div className="flex-none px-4 sm:px-8 py-3 bg-warning/5 border-b border-warning/20">
+          <div className="flex items-start gap-3">
+            <AlertCircle size={14} className="text-warning flex-none mt-0.5" />
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-warning">JARVIS needs configuration</p>
+              <p className="text-xs text-text-muted mt-0.5">
+                <code className="font-mono bg-background-elevated px-1 rounded">GEMINI_API_KEY</code> is not set.
+                {" "}Go to Vercel → Settings → Environment Variables → add it → Redeploy.
+              </p>
+            </div>
+            <a href="/settings" className="flex-none text-text-muted hover:text-text-secondary transition-colors p-0.5 rounded">
+              <Settings size={13} />
+            </a>
+          </div>
       {/* Chat history sidebar */}
       {showHistory && (
         <div className="flex-none w-full border-b border-[rgba(79,195,247,0.08)] bg-background-surface/50 px-4 sm:px-8 py-3 max-h-48 overflow-y-auto">

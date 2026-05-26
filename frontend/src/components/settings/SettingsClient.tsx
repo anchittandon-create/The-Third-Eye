@@ -1,6 +1,8 @@
 "use client";
 
 import { signOut } from "next-auth/react";
+import { User, Shield, Bell, Cpu, LogOut, ExternalLink, Check, Activity, CheckCircle2, XCircle, Loader2 } from "lucide-react";
+import { useState, useEffect } from "react";
 import { User, Shield, Bell, Cpu, LogOut, ExternalLink, Check, Mic, Brain, Bot } from "lucide-react";
 import { AgentProfileManager } from "./AgentProfileManager";
 import { useState } from "react";
@@ -10,9 +12,26 @@ interface Props {
   user: { name?: string | null; email?: string | null; image?: string | null } | null;
 }
 
+interface ServiceStatus {
+  ai: boolean;
+  openai: boolean;
+  supabase: boolean;
+  google_oauth: boolean;
+  serper: boolean;
+}
+
 export function SettingsClient({ user }: Props) {
   const [notifs, setNotifs] = useState(true);
   const [saved, setSaved] = useState(false);
+  const [status, setStatus] = useState<ServiceStatus | null>(null);
+  const [statusLoading, setStatusLoading] = useState(true);
+
+  useEffect(() => {
+    fetch("/api/status")
+      .then((r) => r.json())
+      .then((d) => { setStatus(d); setStatusLoading(false); })
+      .catch(() => setStatusLoading(false));
+  }, []);
 
   function handleSave() {
     setSaved(true);
@@ -109,6 +128,30 @@ export function SettingsClient({ user }: Props) {
         </div>
       </Section>
 
+      {/* System diagnostics */}
+      <Section icon={<Activity size={15} />} title="System">
+        <div className="px-5 py-4 space-y-3">
+          {statusLoading ? (
+            <div className="flex items-center gap-2 text-text-muted text-sm">
+              <Loader2 size={13} className="animate-spin" /> Checking services…
+            </div>
+          ) : (
+            <>
+              <StatusRow label="Gemini AI" ok={status?.ai} hint="Required — GEMINI_API_KEY" />
+              <StatusRow label="OpenAI (Whisper)" ok={status?.openai} hint="Optional — OPENAI_API_KEY" />
+              <StatusRow label="Web Search" ok={status?.serper} hint="Optional — SERPER_API_KEY" />
+              <StatusRow label="Supabase" ok={status?.supabase} hint="Optional — cross-device sync" />
+              <StatusRow label="Google OAuth" ok={status?.google_oauth} hint="Required — sign-in + calendar/email" />
+            </>
+          )}
+          {status && !status.ai && (
+            <p className="text-xs text-text-muted mt-2 pt-2 border-t border-border-default">
+              Add <code className="font-mono bg-background-elevated px-1 rounded text-accent-blue">GEMINI_API_KEY</code> in Vercel → Settings → Environment Variables → Redeploy.
+            </p>
+          )}
+        </div>
+      </Section>
+
       {/* About */}
       <Section icon={<ExternalLink size={15} />} title="System Info">
         <div className="px-5 py-4 space-y-2.5 text-sm text-text-muted font-mono">
@@ -156,6 +199,26 @@ function Row({ label, sub, children }: { label: string; sub: string; children: R
   );
 }
 
+function StatusRow({ label, ok, hint }: { label: string; ok?: boolean; hint: string }) {
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <div>
+        <p className="text-sm text-text-primary">{label}</p>
+        <p className="text-xs text-text-muted mt-0.5">{hint}</p>
+      </div>
+      {ok === undefined ? (
+        <span className="text-xs text-text-muted font-mono">—</span>
+      ) : ok ? (
+        <div className="flex items-center gap-1 text-success">
+          <CheckCircle2 size={13} />
+          <span className="text-xs font-mono">OK</span>
+        </div>
+      ) : (
+        <div className="flex items-center gap-1 text-accent-red">
+          <XCircle size={13} />
+          <span className="text-xs font-mono">Missing</span>
+        </div>
+      )}
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center justify-between">
