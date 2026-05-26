@@ -2,7 +2,7 @@
 
 import { useState, useRef, KeyboardEvent } from "react";
 import { useLocalNotes, LocalNote } from "@/hooks/useLocalNotes";
-import { Plus, Trash2, Pin, PinOff, Search, X } from "lucide-react";
+import { Plus, Trash2, Pin, PinOff, Search, X, Download } from "lucide-react";
 import { cn, formatRelativeTime } from "@/lib/utils";
 
 export function NotesClient() {
@@ -41,6 +41,22 @@ export function NotesClient() {
     setActive((prev) => prev ? { ...prev, title } : null);
   }
 
+  function exportNotes() {
+    const md = notes.map((n) => `# ${n.title}\n\n${n.content}\n\n---\n`).join("\n");
+    const blob = new Blob([md], { type: "text/markdown" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+    a.download = `thirdeye-notes-${new Date().toISOString().slice(0, 10)}.md`;
+    a.click(); URL.revokeObjectURL(a.href);
+  }
+
+  function downloadNote() {
+    if (!active) return;
+    const blob = new Blob([`# ${active.title}\n\n${active.content}`], { type: "text/markdown" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+    a.download = `${active.title.replace(/[^a-zA-Z0-9]/g, "_")}.md`;
+    a.click(); URL.revokeObjectURL(a.href);
+  }
+
   if (!ready) return <div className="flex justify-center py-20"><div className="w-4 h-4 border-2 border-accent-blue/20 border-t-accent-blue rounded-full animate-spin" /></div>;
 
   return (
@@ -73,7 +89,7 @@ export function NotesClient() {
         {/* List */}
         <div className="flex-1 overflow-y-auto space-y-1">
           {notes.length === 0 && (
-            <p className="text-text-muted text-xs text-center py-8">No notes yet. Create one above or ask JARVIS to take a note.</p>
+            <p className="text-text-muted text-xs text-center py-8">No notes yet. Create one above or ask your AI to take a note.</p>
           )}
           {pinned.length > 0 && (
             <>
@@ -85,7 +101,14 @@ export function NotesClient() {
           {rest.map((n) => <NoteRow key={n.id} note={n} active={active?.id === n.id} onClick={() => setActive(n)} onPin={() => update(n.id, { pinned: !n.pinned })} onDelete={() => { remove(n.id); if (active?.id === n.id) setActive(null); }} />)}
         </div>
 
-        <p className="text-[10px] text-text-muted text-center font-mono">{notes.length} notes</p>
+        <div className="flex items-center justify-between">
+          <p className="text-[10px] text-text-muted font-mono">{notes.length} notes</p>
+          {notes.length > 0 && (
+            <button onClick={exportNotes} className="flex items-center gap-1 text-[10px] text-text-muted hover:text-[#4FC3F7] transition-colors font-mono">
+              <Download size={10} /> Export all
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Editor */}
@@ -99,15 +122,18 @@ export function NotesClient() {
                 className="w-full bg-transparent text-text-primary font-semibold text-lg outline-none placeholder:text-text-muted"
                 placeholder="Note title…"
               />
-              <p className="text-text-muted text-xs mt-1 font-mono">
-                {formatRelativeTime(active.updated_at)}
-              </p>
+              <div className="flex items-center gap-2 mt-1">
+                <p className="text-text-muted text-xs font-mono">{formatRelativeTime(active.updated_at)}</p>
+                <button onClick={downloadNote} className="flex items-center gap-1 text-text-muted hover:text-[#4FC3F7] text-xs transition-colors">
+                  <Download size={10} /> Download
+                </button>
+              </div>
             </div>
             <textarea
               ref={textRef}
               value={active.content}
               onChange={(e) => handleBodyChange(e.target.value)}
-              placeholder="Start writing… JARVIS can also add notes for you via the Assistant."
+              placeholder="Start writing… Your AI can also add notes for you via the Assistant."
               className="flex-1 w-full bg-transparent text-text-primary text-sm leading-relaxed resize-none outline-none px-6 py-5 placeholder:text-text-muted"
             />
           </>
@@ -115,7 +141,7 @@ export function NotesClient() {
           <div className="flex-1 flex items-center justify-center">
             <div className="text-center">
               <p className="text-text-muted text-sm">Select a note or create a new one.</p>
-              <p className="text-text-muted text-xs mt-1">You can also ask JARVIS: "Take a note about X"</p>
+              <p className="text-text-muted text-xs mt-1">You can also ask your AI: &quot;Take a note about X&quot;</p>
             </div>
           </div>
         )}

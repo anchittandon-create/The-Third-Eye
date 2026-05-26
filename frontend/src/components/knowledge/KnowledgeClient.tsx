@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useCallback, DragEvent, useState } from "react";
-import { Upload, FileText, Trash2, Search, AlertCircle, CheckCircle2, BookOpen } from "lucide-react";
+import { Upload, FileText, Trash2, Search, AlertCircle, CheckCircle2, BookOpen, Download } from "lucide-react";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { useLocalKnowledge, searchDocs, type SearchResult } from "@/hooks/useLocalKnowledge";
 
@@ -32,6 +32,22 @@ export function KnowledgeClient() {
     const r = searchDocs(docs, q, 5);
     setResults(r);
     setSearching(false);
+  }
+
+  function downloadDoc(doc: typeof docs[0]) {
+    const ext = doc.file_type ?? "txt";
+    const blob = new Blob([doc.content], { type: "text/plain" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+    a.download = doc.title.endsWith(`.${ext}`) ? doc.title : `${doc.title}.${ext}`;
+    a.click(); URL.revokeObjectURL(a.href);
+  }
+
+  function exportAll() {
+    const combined = docs.map((d) => `=== ${d.title} ===\n\n${d.content}`).join("\n\n" + "=".repeat(60) + "\n\n");
+    const blob = new Blob([combined], { type: "text/plain" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+    a.download = `thirdeye-knowledge-${new Date().toISOString().slice(0, 10)}.txt`;
+    a.click(); URL.revokeObjectURL(a.href);
   }
 
   if (!ready) return (
@@ -127,14 +143,21 @@ export function KnowledgeClient() {
       <div className="bg-background-surface border border-border-default rounded-card">
         <div className="px-5 py-4 border-b border-border-default flex items-center justify-between">
           <h2 className="text-text-primary font-medium text-sm">Documents</h2>
-          <span className="text-text-muted text-xs font-mono">{docs.length} total</span>
+          <div className="flex items-center gap-3">
+            {docs.length > 0 && (
+              <button onClick={exportAll} className="flex items-center gap-1 text-text-muted hover:text-[#4FC3F7] text-xs font-mono transition-colors">
+                <Download size={11} /> Export all
+              </button>
+            )}
+            <span className="text-text-muted text-xs font-mono">{docs.length} total</span>
+          </div>
         </div>
 
         {docs.length === 0 ? (
           <div className="px-5 py-12 text-center">
             <BookOpen size={24} className="mx-auto text-text-muted opacity-40 mb-3" />
             <p className="text-text-muted text-sm">No documents yet. Upload one above.</p>
-            <p className="text-text-muted text-xs mt-1">JARVIS will search them when you ask questions.</p>
+            <p className="text-text-muted text-xs mt-1">Your AI will search them when you ask questions.</p>
           </div>
         ) : (
           <ul className="divide-y divide-border-default">
@@ -157,6 +180,11 @@ export function KnowledgeClient() {
                     : <><AlertCircle size={12} /> Failed</>}
                 </span>
                 <span className="text-text-muted text-xs flex-none">{formatRelativeTime(doc.created_at)}</span>
+                <button onClick={() => downloadDoc(doc)}
+                  className="flex-none text-text-muted hover:text-[#4FC3F7] opacity-0 group-hover:opacity-100 transition-all"
+                  title="Download">
+                  <Download size={13} />
+                </button>
                 <button onClick={() => remove(doc.id)}
                   className="flex-none text-text-muted hover:text-accent-red opacity-0 group-hover:opacity-100 transition-all"
                   title="Delete">

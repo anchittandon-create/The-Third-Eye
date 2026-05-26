@@ -6,10 +6,11 @@ import { signOut, useSession } from "next-auth/react";
 import {
   LayoutDashboard, MessageSquare, CheckSquare, BookOpen,
   BarChart2, Settings, LogOut, PanelLeftClose, PanelLeftOpen,
-  FileText, Target,
+  FileText, Target, Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
+import { useAgentProfile } from "@/hooks/useAgentProfile";
 
 const NAV_ITEMS = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
@@ -19,12 +20,14 @@ const NAV_ITEMS = [
   { label: "Goals",      href: "/goals",      icon: Target },
   { label: "Knowledge",  href: "/knowledge",  icon: BookOpen },
   { label: "Finance",    href: "/finance",    icon: BarChart2 },
+  { label: "Capabilities", href: "/capabilities", icon: Sparkles },
 ];
 
 export function Sidebar() {
   const pathname = usePathname();
   const { data: session } = useSession();
   const [collapsed, setCollapsed] = useState(false);
+  const { active: agent } = useAgentProfile();
 
   return (
     <aside
@@ -45,7 +48,7 @@ export function Sidebar() {
         {!collapsed && (
           <div className="flex-1 min-w-0">
             <div className="font-display font-semibold text-text-primary tracking-tight leading-none gradient-text-arc">
-              JARVIS OS
+              The Third Eye
             </div>
             <div className="text-[10px] font-mono text-text-muted mt-0.5 tracking-wider">v0.1.0 · ONLINE</div>
           </div>

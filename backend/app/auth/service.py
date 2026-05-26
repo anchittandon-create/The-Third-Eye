@@ -148,7 +148,7 @@ async def append_audit_log(
         input_hash=input_hash,
         output_hash=output_hash,
         duration_ms=duration_ms,
-        metadata=metadata,
+        metadata_json=metadata,
     )
     db.add(entry)
     # Flush but do not commit here; caller owns the transaction
