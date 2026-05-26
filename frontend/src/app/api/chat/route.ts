@@ -622,7 +622,7 @@ export async function POST(req: NextRequest) {
   const genAI = new GoogleGenerativeAI(apiKey);
 
   let systemInstruction = agentPersonality
-    ? `${agentPersonality}\n\nYour name for this session is "${agentName ?? "Assistant"}". Stay fully in character.\n\n` +
+    ? `${agentPersonality}\n\nYour name for this session is "${agentName ?? "Assistant"}". Stay fully in character.\n\n## Capability parity\nEvery tool listed below is available to you regardless of which persona you are. JARVIS, FRIDAY, E.D.I.T.H., ULTRON and any custom profile share the same capabilities — only your voice, tone, and personality differ. The *content* and *correctness* of your output must be identical to what any other persona would produce; only the *style* changes.\n\n` +
       SYSTEM_PROMPT.split("## Core Principle").slice(1).map((s) => "## Core Principle" + s).join("")
     : SYSTEM_PROMPT;
   if (userName) systemInstruction += `\n\nOperator: ${userName}`;

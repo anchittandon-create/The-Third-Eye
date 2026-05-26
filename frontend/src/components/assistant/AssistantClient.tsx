@@ -2,11 +2,12 @@
 
 import { useState, useRef, useEffect, useCallback, KeyboardEvent } from "react";
 import { useSession } from "next-auth/react";
-import { Send, Cpu, Zap, RotateCcw, Volume2, VolumeX, Mic, MicOff, Globe, AlertCircle, Paperclip, X, FileText, History, Plus, Trash2 } from "lucide-react";
+import { Send, Cpu, Zap, RotateCcw, Volume2, VolumeX, Mic, MicOff, Globe, AlertCircle, Paperclip, X, FileText, History, Plus, Trash2, Ear } from "lucide-react";
 import { cn } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useVoiceSTT, useTTS } from "@/hooks/useVoice";
+import { useWakeWord } from "@/hooks/useWakeWord";
 import { useLocalTasks } from "@/hooks/useLocalTasks";
 import { useLocalKnowledge } from "@/hooks/useLocalKnowledge";
 import { useAgentProfile } from "@/hooks/useAgentProfile";
@@ -78,6 +79,11 @@ export function AssistantClient({ userName }: { userName?: string }) {
   const [apiError, setApiError] = useState<string | null>(null);
   const [liveBubble, setLiveBubble] = useState<LiveBubble | null>(null);
   const [micOn, setMicOn] = useState(false);
+  const [wakeEnabled, setWakeEnabled] = useState(() => {
+    if (typeof window === "undefined") return true;
+    const v = localStorage.getItem("te_wake_enabled");
+    return v === null ? true : v === "true";
+  });
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
 
@@ -347,6 +353,22 @@ export function AssistantClient({ userName }: { userName?: string }) {
     else { stt.enable(); setMicOn(true); }
   }
 
+  const micConsent = useConsent("microphone");
+
+  useWakeWord({
+    agentName: agent.name,
+    enabled: wakeEnabled && micConsent.granted && !micOn && !isStreaming,
+    extraTriggers: ["hi", "hey", "ok", "hello", "yo"],
+    onWake: () => {
+      if (!micOn && stt.supported) {
+        stt.enable();
+        setMicOn(true);
+      }
+    },
+  });
+
+  useEffect(() => { localStorage.setItem("te_wake_enabled", String(wakeEnabled)); }, [wakeEnabled]);
+
   function handleDrop(e: React.DragEvent) {
     e.preventDefault(); setIsDragging(false);
     if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
@@ -413,6 +435,18 @@ export function AssistantClient({ userName }: { userName?: string }) {
               className={cn("p-1.5 rounded-input transition-colors",
                 micOn ? "text-[#4FC3F7]" : "text-text-muted hover:text-text-secondary")}>
               {micOn ? <Mic size={13} /> : <MicOff size={13} />}
+            </button>
+          )}
+          {stt.supported && (
+            <button
+              onClick={() => setWakeEnabled((v) => !v)}
+              title={wakeEnabled ? `Wake word ON — say "${agent.name}" or "hey"` : "Wake word OFF"}
+              className={cn(
+                "p-1.5 rounded-input transition-colors",
+                wakeEnabled ? "text-emerald-400" : "text-text-muted hover:text-text-secondary",
+              )}
+            >
+              <Ear size={13} />
             </button>
           )}
           <button onClick={() => setShowHistory((v) => !v)} title="Chat history"
